@@ -82,7 +82,35 @@ npx -y pnpm install --frozen-lockfile && npx -y pnpm -r build
 - [ ] Log aggregation with tenant/request ids; error alerting
 - [ ] Isolation smoke test against prod schema (two tenants, cross-read must be empty)
 
-## 5. Scaling path
+## 5. Serverless (Vercel) deployment
+
+The repo also deploys to Vercel: the API runs as one serverless function
+(`api/index.ts`, reusing a warm Fastify instance), and each frontend deploys as
+a static build with `VITE_API_URL` compiled in. Notes that bit us and are now
+encoded in `vercel.json` / `api/index.ts`:
+
+- The function entry uses a **dynamic** `import()` of the ESM app — Vercel
+  compiles the entry to CommonJS, so a static import fails with `ERR_REQUIRE_ESM`.
+- Build frontends from the **repo root** (or prebuilt), never the app
+  subdirectory, or `tsconfig.base.json` is missing and TypeScript silently
+  falls back to ES3.
+- **No migrations at boot** — a cold start must never mutate the schema.
+
+The worker's two self-contained Postgres jobs run as **Vercel Cron** functions
+(`api/cron/reservation-janitor`, `api/cron/drift-check`), guarded by a
+`CRON_SECRET` bearer token and connecting as `omniretail_worker`
+(`WORKER_DATABASE_URL`). **Vercel's Hobby plan caps cron frequency at once/day**,
+so these are scheduled daily there; the endpoints are also invokable directly
+with the secret, so a Pro plan (real cron cadence) or any external scheduler can
+drive them at their intended interval (janitor ~15 min, drift ~hourly).
+
+The **outbox relay and connector/channel sync are NOT on serverless** — they are
+queue-consumer processes (BullMQ/Redis) that need a persistent runtime. Host
+`apps/worker` on a process platform (Railway/Fly/a VPS) when marketplace sync is
+switched on; until then, `order.created`/`inventory.level.changed` events durably
+accumulate in the `outbox` table and simply aren't relayed.
+
+## 6. Scaling path
 
 API is stateless — scale horizontally. Workers scale by splitting queues (relay vs
 connectors vs jobs); `FOR UPDATE SKIP LOCKED` makes multiple relays safe. Postgres:

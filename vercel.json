@@ -1,14 +1,26 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "pnpm install --no-frozen-lockfile",
-  "buildCommand": "pnpm --filter @omniretail/domain --filter @omniretail/db --filter @omniretail/api build",
+  "buildCommand": "pnpm --filter @omniretail/domain --filter @omniretail/db --filter @omniretail/api --filter @omniretail/connector-sdk --filter @omniretail/connector-noon --filter @omniretail/worker build",
   "outputDirectory": "public",
   "functions": {
     "api/index.ts": {
       "maxDuration": 30,
       "includeFiles": "apps/api/dist/**"
+    },
+    "api/cron/reservation-janitor.ts": {
+      "maxDuration": 60,
+      "includeFiles": "apps/worker/dist/**"
+    },
+    "api/cron/drift-check.ts": {
+      "maxDuration": 60,
+      "includeFiles": "apps/worker/dist/**"
     }
   },
+  "crons": [
+    { "path": "/api/cron/reservation-janitor", "schedule": "0 2 * * *" },
+    { "path": "/api/cron/drift-check", "schedule": "0 3 * * *" }
+  ],
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/api" }
   ]
