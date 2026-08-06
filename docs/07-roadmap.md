@@ -20,10 +20,15 @@ Phases are cumulative; each ends with a releasable increment, updated docs, and 
 > with explicit pre-transmission disclaimer), COGS journal postings, and the
 > Expo mobile companion (typecheck+unit-verified; no native toolchain here).
 >
-> **Still requires external accounts/tooling to activate:** real gateway +
-> courier + marketplace credentials, e-invoice transmission via an accredited
-> provider, Tauri desktop shell (Rust toolchain), app-store builds of the
-> mobile app, per-bin stock quantities (WMS v2).
+> **Phase 6 additions:** hourly ledger drift-check job, storefront pay-now,
+> API reference / deployment guide / testing strategy docs, and the **Tauri 2
+> desktop POS shell** (built and verified: 5.8 MB native binary; Rust
+> installed via rustup on the dev machine). Hardware plugins (ESC/POS
+> printer, cash drawer, SQLite offline store) attach to the Rust side next.
+>
+> **Still requires external accounts to activate:** real gateway + courier +
+> marketplace credentials, e-invoice transmission via an accredited provider,
+> app-store builds of the mobile app, per-bin stock quantities (WMS v2).
 
 ## Phase 0 — Foundations (this repo state)
 Architecture + ADRs, PRD, integration & security design, core database schema,

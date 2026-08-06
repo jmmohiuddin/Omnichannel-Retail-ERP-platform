@@ -2,6 +2,8 @@
 
 - pnpm workspace (Turborepo added when app count grows). TypeScript strict everywhere; ESM only.
 - pnpm is not globally installed on this machine — use `npx -y pnpm <cmd>`.
+- Rust is installed user-space via rustup (`~/.cargo/bin`); `apps/pos-desktop` (Tauri)
+  needs it on PATH: `export PATH="$HOME/.cargo/bin:$PATH"`.
 - Build before test: `apps/api` resolves `@omniretail/domain` from its `dist/` output.
 - `packages/domain` is a **pure** domain core: no I/O, no framework imports, 100% unit-testable.
   All inventory math and invariants live here — never re-implement them in apps.

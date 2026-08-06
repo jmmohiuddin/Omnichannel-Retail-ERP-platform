@@ -32,8 +32,10 @@ apps/
                              + AI narration gateway
   worker/                    @omniretail/worker — outbox relay → BullMQ + channel-sync
                              event consumer (connector fan-out)
-  pos/                       @omniretail/pos — POS web app (Vite/React; Tauri shell later —
-                             requires the Rust toolchain via rustup, not yet installed here)
+  pos/                       @omniretail/pos — POS web app (Vite/React)
+  pos-desktop/               @omniretail/pos-desktop — Tauri 2 native shell around the
+                             POS app (5.8 MB binary; `pnpm --filter @omniretail/pos-desktop
+                             dev` — needs Rust, installed via rustup)
   admin/                     @omniretail/admin — admin portal (dashboard, catalog,
                              stock levels, audit ledger)
   storefront/                @omniretail/storefront — customer store: catalog, cart,

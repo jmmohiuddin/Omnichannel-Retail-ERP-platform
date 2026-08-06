@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Baseline window capabilities for the POS shell",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

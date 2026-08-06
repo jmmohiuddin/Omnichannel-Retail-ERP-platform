@@ -1,0 +1,17 @@
+{
+  "name": "@omniretail/pos-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Tauri desktop shell around @omniretail/pos (native webview, ~10x lighter than Electron — ADR-007)",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build --no-bundle",
+    "bundle": "tauri build",
+    "typecheck": "true",
+    "test": "true"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}
