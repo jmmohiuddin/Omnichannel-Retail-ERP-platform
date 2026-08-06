@@ -1,0 +1,8 @@
+apps/pos-desktop
+apps/mobile
+apps/admin/dist
+apps/pos/dist
+apps/storefront/dist
+docs
+**/*.integration.test.ts
+**/*.test.ts
