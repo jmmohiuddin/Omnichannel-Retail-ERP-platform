@@ -228,13 +228,20 @@ export class SalesService {
           });
         }
 
+        // Cash lands in the register's open session so blind reconciliation
+        // (FP-005) has a complete ledger of what should be in the drawer.
+        const session = await c.query<{ id: string }>(
+          "SELECT id FROM cash_session WHERE device_id = $1 AND status = 'open'",
+          [input.deviceId],
+        );
+        const cashSessionId = session.rows[0]?.id ?? null;
         for (const payment of input.payments) {
           await c.query(
             `INSERT INTO payment (id, tenant_id, order_id, method, amount_minor, currency,
-                                  status, received_by)
-             VALUES ($1,$2,$3,$4,$5,$6,'captured',$7)`,
+                                  status, received_by, cash_session_id)
+             VALUES ($1,$2,$3,$4,$5,$6,'captured',$7,$8)`,
             [randomUUID(), tenantId, input.id, payment.method, payment.amountMinor,
-             currency, actorUserId],
+             currency, actorUserId, payment.method === "cash" ? cashSessionId : null],
           );
         }
 

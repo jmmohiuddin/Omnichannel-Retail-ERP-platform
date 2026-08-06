@@ -178,6 +178,46 @@ describe("approval-gated movements (fraud controls)", () => {
   });
 });
 
+describe("count corrections", () => {
+  it("supports both overage (credit) and shortage (debit) with approval", () => {
+    const ledger = new InventoryLedger();
+    ledger.post(receipt(10));
+    ledger.post(
+      movement({
+        movementType: "count_correction",
+        quantity: 2,
+        to: { locationId: STORE, state: "on_hand" },
+        approvalId: "approval-1",
+      }),
+    );
+    expect(ledger.level(VARIANT, STORE, "on_hand")).toBe(12);
+    ledger.post(
+      movement({
+        movementType: "count_correction",
+        quantity: 5,
+        from: { locationId: STORE, state: "on_hand" },
+        approvalId: "approval-2",
+      }),
+    );
+    expect(ledger.level(VARIANT, STORE, "on_hand")).toBe(7);
+  });
+
+  it("rejects a correction with both or neither side", () => {
+    const ledger = new InventoryLedger();
+    ledger.post(receipt(5));
+    expect(() =>
+      ledger.post(
+        movement({
+          movementType: "count_correction",
+          from: { locationId: STORE, state: "on_hand" },
+          to: { locationId: STORE, state: "on_hand" },
+          approvalId: "a",
+        }),
+      ),
+    ).toThrowError(/exactly one/);
+  });
+});
+
 describe("idempotency and replay", () => {
   it("rejects duplicate movement ids (offline replay safety)", () => {
     const ledger = new InventoryLedger();

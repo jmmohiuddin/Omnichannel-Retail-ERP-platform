@@ -15,7 +15,11 @@ if (adminDatabaseUrl) {
   if (applied.length) console.log(`migrations applied: ${applied.join(", ")}`);
 }
 
-const app = buildPgApp({ databaseUrl, jwtSecret });
+const app = buildPgApp({
+  databaseUrl,
+  jwtSecret,
+  ...(process.env.ANTHROPIC_API_KEY ? { anthropicApiKey: process.env.ANTHROPIC_API_KEY } : {}),
+});
 const port = Number(process.env.PORT ?? 3001);
 await app.listen({ port, host: "0.0.0.0" });
 console.log(`OmniRetail API listening on :${port}`);

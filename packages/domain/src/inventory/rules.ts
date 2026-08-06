@@ -8,8 +8,10 @@ import { LedgerError } from "./types.js";
  * in packages/db/sql/003_inventory.sql.
  */
 interface MovementRule {
-  from: "required" | "forbidden";
-  to: "required" | "forbidden";
+  from: "required" | "forbidden" | "optional";
+  to: "required" | "forbidden" | "optional";
+  /** When set, exactly one of from/to must be present (e.g. count corrections). */
+  exactlyOneSide?: boolean;
   fromStates?: StockState[];
   toStates?: StockState[];
   /** from/to must be the same location (e.g. reservation) or different (transfer). */
@@ -56,7 +58,14 @@ export const MOVEMENT_RULES: Record<MovementType, MovementRule> = {
     fromStates: ["on_hand", "damaged", "returned_pending"],
     requiresApproval: true,
   },
-  count_correction: { from: "forbidden", to: "required", toStates: ["on_hand"], requiresApproval: true },
+  count_correction: {
+    from: "optional",
+    to: "optional",
+    fromStates: ["on_hand"],
+    toStates: ["on_hand"],
+    exactlyOneSide: true, // overage credits on_hand; shortage debits it
+    requiresApproval: true,
+  },
   repair_out: { from: "required", to: "required", fromStates: ["on_hand"], toStates: ["damaged"], locations: "same" },
   repair_in: { from: "required", to: "required", fromStates: ["damaged"], toStates: ["on_hand"], locations: "same" },
 };
@@ -80,6 +89,12 @@ export function validateMovementShape(m: MovementInput): void {
   }
   if (rule.to === "forbidden" && m.to) {
     throw new LedgerError("INVALID_SHAPE", `${m.movementType} must not have a destination bucket`);
+  }
+  if (rule.exactlyOneSide && Boolean(m.from) === Boolean(m.to)) {
+    throw new LedgerError(
+      "INVALID_SHAPE",
+      `${m.movementType} requires exactly one of source or destination`,
+    );
   }
   if (m.from && rule.fromStates && !rule.fromStates.includes(m.from.state)) {
     throw new LedgerError(

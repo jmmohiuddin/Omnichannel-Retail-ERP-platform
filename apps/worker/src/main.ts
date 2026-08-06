@@ -13,14 +13,21 @@ const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
 const publisher = new BullPublisher(redisUrl);
 const relay = new OutboxRelay(pool, publisher);
 const { startEventConsumer } = await import("./consumer.js");
+const { ReservationJanitor } = await import("./reservationJanitor.js");
 const consumer = startEventConsumer(pool, redisUrl);
+
+const janitor = new ReservationJanitor(pool);
+const janitorTimer = setInterval(() => {
+  janitor.runOnce().catch((err) => console.error("janitor:", err.message));
+}, 60_000);
 
 const abort = new AbortController();
 process.on("SIGINT", () => abort.abort());
 process.on("SIGTERM", () => abort.abort());
 
-console.log("outbox relay + event consumer running");
+console.log("outbox relay + event consumer + reservation janitor running");
 await relay.runForever(500, abort.signal);
+clearInterval(janitorTimer);
 await consumer.close();
 await publisher.close();
 await pool.end();

@@ -19,7 +19,13 @@ import { ReceivingService } from "./inventory/receivingService.js";
 import { SaleError, SalesService } from "./sales/salesService.js";
 import { RefundError, RefundService } from "./sales/refundService.js";
 import { WebOrderService } from "./sales/webOrderService.js";
+import { FulfillmentError, FulfillmentService } from "./sales/fulfillmentService.js";
+import { OpsError, OpsService } from "./inventory/opsService.js";
 import { AnalyticsService } from "./analytics/analyticsService.js";
+import { FinanceError, FinanceService } from "./finance/financeService.js";
+import { AiBudgetError, AiGateway, StubProvider } from "./ai/gateway.js";
+import { AnthropicProvider } from "./ai/anthropicProvider.js";
+import { generateDailyDigest } from "./ai/digest.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -91,6 +97,8 @@ const movementBodySchema = z.object({
 export interface PgAppConfig {
   databaseUrl: string;
   jwtSecret: string;
+  /** When absent, AI narration uses the deterministic StubProvider. */
+  anthropicApiKey?: string;
 }
 
 export function buildPgApp(config: PgAppConfig) {
@@ -103,7 +111,15 @@ export function buildPgApp(config: PgAppConfig) {
   const receiving = new ReceivingService(db, inventory);
   const refunds = new RefundService(db, inventory);
   const webOrders = new WebOrderService(db, inventory);
+  const fulfillment = new FulfillmentService(db, inventory);
+  const ops = new OpsService(db, inventory);
   const analytics = new AnalyticsService(db);
+  const finance = new FinanceService(db);
+  const aiGateway = new AiGateway(
+    config.anthropicApiKey
+      ? new AnthropicProvider({ apiKey: config.anthropicApiKey })
+      : new StubProvider(),
+  );
 
   // Browser clients (admin portal, POS webview). Tokens travel in the
   // Authorization header — no cookies — so a permissive dev origin is safe;
@@ -138,6 +154,25 @@ export function buildPgApp(config: PgAppConfig) {
         : err.code === "DUPLICATE_SALE" ? 409
         : err.code === "UNIT_UNAVAILABLE" ? 409
         : 400;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
+    if (err instanceof FulfillmentError) {
+      const status =
+        err.code === "ORDER_NOT_FOUND" ? 404
+        : err.code === "BAD_STATE" ? 409
+        : err.code === "UNIT_UNAVAILABLE" ? 409
+        : 400;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
+    if (err instanceof OpsError) {
+      const status =
+        err.code === "SESSION_NOT_FOUND" || err.code === "TRANSFER_NOT_FOUND" ||
+        err.code === "COUNT_NOT_FOUND" ? 404
+        : 409;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
+    if (err instanceof FinanceError) {
+      const status = err.code.endsWith("NOT_FOUND") ? 404 : 422;
       return reply.code(status).send({ error: err.code, message: err.message });
     }
     if (err instanceof RefundError) {
@@ -507,6 +542,97 @@ export function buildPgApp(config: PgAppConfig) {
       return inventory.availability(req.auth.tenantId, variantId, locationId);
     });
 
+    secured.post("/v1/orders/:orderId/fulfill", async (req, reply) => {
+      const { orderId } = req.params as { orderId: string };
+      const parsed = z
+        .object({
+          units: z.array(
+            z.object({ variantId: z.string().uuid(), stockUnitId: z.string().uuid() }),
+          ).optional(),
+        })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return fulfillment.fulfill(req.auth.tenantId, req.auth.userId, orderId, parsed.data);
+    });
+
+    secured.post("/v1/orders/:orderId/cancel", async (req, reply) => {
+      const { orderId } = req.params as { orderId: string };
+      const parsed = z.object({ reason: z.string().min(3).max(300) }).safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return fulfillment.cancel(req.auth.tenantId, req.auth.userId, orderId, parsed.data.reason);
+    });
+
+    secured.post("/v1/cash-sessions", async (req, reply) => {
+      const parsed = z
+        .object({ deviceId: z.string().uuid(), openingFloatMinor: z.number().int().nonnegative() })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await ops.openCashSession(req.auth.tenantId, req.auth.userId, parsed.data);
+      return reply.code(201).send(result);
+    });
+
+    secured.post("/v1/cash-sessions/:sessionId/close", async (req, reply) => {
+      const { sessionId } = req.params as { sessionId: string };
+      const parsed = z
+        .object({ declaredMinor: z.number().int().nonnegative() })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return ops.closeCashSession(
+        req.auth.tenantId, req.auth.userId, sessionId, parsed.data.declaredMinor,
+      );
+    });
+
+    secured.post("/v1/transfers", async (req, reply) => {
+      const parsed = z
+        .object({
+          fromLocationId: z.string().uuid(),
+          toLocationId: z.string().uuid(),
+          note: z.string().max(300).optional(),
+          lines: z.array(
+            z.object({ variantId: z.string().uuid(), quantity: z.number().positive() }),
+          ).min(1),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await ops.dispatchTransfer(req.auth.tenantId, req.auth.userId, parsed.data);
+      return reply.code(201).send(result);
+    });
+
+    secured.post("/v1/transfers/:transferId/receive", async (req) => {
+      const { transferId } = req.params as { transferId: string };
+      return ops.receiveTransfer(req.auth.tenantId, req.auth.userId, transferId);
+    });
+
+    secured.post("/v1/stock-counts", async (req, reply) => {
+      const parsed = z
+        .object({
+          locationId: z.string().uuid(),
+          variantIds: z.array(z.string().uuid()).min(1).max(500),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await ops.createCount(req.auth.tenantId, req.auth.userId, parsed.data);
+      return reply.code(201).send(result);
+    });
+
+    secured.put("/v1/stock-counts/:countId/lines", async (req, reply) => {
+      const { countId } = req.params as { countId: string };
+      const parsed = z
+        .object({
+          counts: z.array(
+            z.object({ variantId: z.string().uuid(), countedQty: z.number().nonnegative() }),
+          ).min(1),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return ops.recordCounts(req.auth.tenantId, req.auth.userId, countId, parsed.data.counts);
+    });
+
+    secured.post("/v1/stock-counts/:countId/submit", async (req) => {
+      const { countId } = req.params as { countId: string };
+      return ops.submitCount(req.auth.tenantId, req.auth.userId, countId);
+    });
+
     secured.get("/v1/analytics/summary", async (req) => analytics.summary(req.auth.tenantId));
 
     secured.get("/v1/ai/reorder-suggestions", async (req) => {
@@ -524,6 +650,71 @@ export function buildPgApp(config: PgAppConfig) {
         .object({ thresholdDays: z.coerce.number().int().min(14).max(730).default(90) })
         .parse(req.query);
       return { items: await analytics.deadStock(req.auth.tenantId, q.thresholdDays) };
+    });
+
+    secured.post("/v1/finance/orders/:orderId/post", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      const { orderId } = req.params as { orderId: string };
+      return finance.postSale(req.auth.tenantId, orderId);
+    });
+
+    secured.post("/v1/finance/refunds/:refundId/post", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      const { refundId } = req.params as { refundId: string };
+      return finance.postRefund(req.auth.tenantId, refundId);
+    });
+
+    secured.get("/v1/finance/trial-balance", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      return finance.trialBalance(req.auth.tenantId);
+    });
+
+    secured.get("/v1/finance/pnl", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      const q = z
+        .object({ from: z.string().datetime(), to: z.string().datetime() })
+        .safeParse(req.query);
+      if (!q.success) return sendZodError(reply, q.error.issues);
+      return finance.profitAndLoss(req.auth.tenantId, {
+        fromIso: q.data.from,
+        toIso: q.data.to,
+      });
+    });
+
+    secured.get("/v1/ai/daily-digest", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      const tenantId = req.auth.tenantId;
+      const [summary, reorder, deadStock, exceptions] = await Promise.all([
+        analytics.summary(tenantId),
+        analytics.reorderSuggestions(tenantId),
+        analytics.deadStock(tenantId),
+        analytics.exceptions(tenantId),
+      ]);
+      try {
+        const result = await generateDailyDigest(aiGateway, tenantId, {
+          summary, reorder, deadStock, exceptions,
+        } as never);
+        return {
+          digest: result.text,
+          generatedBy: config.anthropicApiKey ? "claude" : "stub",
+          data: { summary, reorder, deadStock, exceptions },
+        };
+      } catch (err) {
+        if (err instanceof AiBudgetError) {
+          return reply.code(429).send({ error: err.code });
+        }
+        throw err;
+      }
     });
 
     secured.get("/v1/reports/exceptions", async (req, reply) => {

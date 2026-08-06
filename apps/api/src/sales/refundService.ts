@@ -145,12 +145,48 @@ export class RefundService {
 
         if (approval.kind === "refund") {
           await this.processRefund(c, tenantId, approver.userId, approvalId, approval.payload);
+        } else if (approval.kind === "stock_count") {
+          await this.processStockCount(
+            c, tenantId, approver.userId, approvalId,
+            approval.payload as unknown as {
+              countId: string; locationId: string;
+              variances: { variantId: string; delta: number }[];
+            },
+          );
         }
         return { status: "approved" };
       });
     } catch (err) {
       throw translatePgError(err);
     }
+  }
+
+  /** Approved cycle-count variance → approval-stamped ledger corrections. */
+  private async processStockCount(
+    c: import("pg").PoolClient,
+    tenantId: string,
+    approverUserId: string,
+    approvalId: string,
+    payload: { countId: string; locationId: string; variances: { variantId: string; delta: number }[] },
+  ): Promise<void> {
+    for (const v of payload.variances) {
+      const bucket = { locationId: payload.locationId, state: "on_hand" as const };
+      await this.inventory.postMovementWith(c, tenantId, {
+        id: randomUUID(),
+        movementType: "count_correction",
+        variantId: v.variantId,
+        quantity: Math.abs(v.delta),
+        ...(v.delta > 0 ? { to: bucket } : { from: bucket }),
+        actorUserId: approverUserId,
+        reference: { type: "count", id: payload.countId },
+        approvalId,
+        occurredAt: new Date(),
+      });
+    }
+    await c.query(
+      "UPDATE stock_count SET status = 'posted', posted_at = now() WHERE id = $1",
+      [payload.countId],
+    );
   }
 
   private async processRefund(
