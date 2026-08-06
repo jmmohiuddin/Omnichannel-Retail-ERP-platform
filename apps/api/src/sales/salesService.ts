@@ -16,6 +16,7 @@ export function saleLineMovementId(saleId: string, lineIndex: number): string {
 import { lineTotals, saleTotals, type LineTotals } from "@omniretail/domain";
 import type { Db } from "../db.js";
 import { PgInventoryService, translatePgError } from "../inventory/pgInventory.js";
+import { LoyaltyService } from "../crm/loyaltyService.js";
 
 export class SaleError extends Error {
   constructor(
@@ -49,8 +50,10 @@ export interface PosSaleInput {
   deviceId: string;
   locationId: string;
   customerName?: string;
+  /** Attached CRM customer — required for loyalty_points payments. */
+  customerId?: string;
   lines: SaleLineInput[];
-  payments: { method: "cash" | "card"; amountMinor: number }[];
+  payments: { method: "cash" | "card" | "loyalty_points"; amountMinor: number }[];
   offlineCreated?: boolean;
   occurredAt?: Date;
 }
@@ -77,6 +80,7 @@ export class SalesService {
   constructor(
     private readonly db: Db,
     private readonly inventory: PgInventoryService,
+    private readonly loyalty: LoyaltyService,
   ) {}
 
   async createPosSale(
@@ -183,12 +187,12 @@ export class SalesService {
         await c.query(
           `INSERT INTO sales_order
              (id, tenant_id, order_no, channel_id, location_id, cashier_user_id, device_id,
-              status, currency, subtotal_minor, discount_minor, tax_minor, total_minor,
-              placed_at, completed_at, offline_created, meta)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'completed',$8,$9,$10,$11,$12,$13,$13,$14,$15)`,
+              customer_id, status, currency, subtotal_minor, discount_minor, tax_minor,
+              total_minor, placed_at, completed_at, offline_created, meta)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'completed',$9,$10,$11,$12,$13,$14,$14,$15,$16)`,
           [
             input.id, tenantId, orderNo, channel.rows[0].id, input.locationId,
-            actorUserId, input.deviceId, currency,
+            actorUserId, input.deviceId, input.customerId ?? null, currency,
             totals.subtotalMinor,
             input.lines.reduce((s, l) => s + (l.discountMinor ?? 0), 0),
             totals.taxMinor, totals.totalMinor, occurredAt,
@@ -228,6 +232,18 @@ export class SalesService {
           });
         }
 
+        // Loyalty redemption is part of the sale transaction: points are
+        // deducted (or the whole sale fails) before any payment row exists.
+        const loyaltyPaid = input.payments
+          .filter((p) => p.method === "loyalty_points")
+          .reduce((s, p) => s + p.amountMinor, 0);
+        if (loyaltyPaid > 0) {
+          if (!input.customerId) {
+            throw new SaleError("PAYMENT_MISMATCH", "loyalty payment requires an attached customer");
+          }
+          await this.loyalty.redeemWith(c, tenantId, input.customerId, input.id, loyaltyPaid);
+        }
+
         // Cash lands in the register's open session so blind reconciliation
         // (FP-005) has a complete ledger of what should be in the drawer.
         const session = await c.query<{ id: string }>(
@@ -242,6 +258,14 @@ export class SalesService {
              VALUES ($1,$2,$3,$4,$5,$6,'captured',$7,$8)`,
             [randomUUID(), tenantId, input.id, payment.method, payment.amountMinor,
              currency, actorUserId, payment.method === "cash" ? cashSessionId : null],
+          );
+        }
+
+        // Points accrue on what the customer actually paid (excluding the
+        // loyalty-funded part) — atomically with the sale, idempotent on replay.
+        if (input.customerId) {
+          await this.loyalty.accrueWith(
+            c, tenantId, input.customerId, input.id, totals.totalMinor - loyaltyPaid,
           );
         }
 

@@ -16,14 +16,22 @@ export interface CartLine {
   currency: string;
   /** Present for serialized (IMEI-tracked) items — qty locked to 1. */
   stockUnitId?: string;
+  /** The IMEI shown on serialized lines and receipts. */
+  imei?: string;
 }
 
 export type CartAction =
   | { type: "add"; line: Omit<CartLine, "quantity"> }
   | { type: "increment"; variantId: string }
   | { type: "decrement"; variantId: string }
-  | { type: "remove"; variantId: string }
+  /** stockUnitId scopes removal to one serialized line of the variant. */
+  | { type: "remove"; variantId: string; stockUnitId?: string }
   | { type: "clear" };
+
+/** Duplicate-unit guard: a serialized unit may be in the cart at most once. */
+export function hasStockUnit(lines: readonly CartLine[], stockUnitId: string): boolean {
+  return lines.some((l) => l.stockUnitId === stockUnitId);
+}
 
 export function cartReducer(lines: readonly CartLine[], action: CartAction): CartLine[] {
   switch (action.type) {
@@ -52,7 +60,9 @@ export function cartReducer(lines: readonly CartLine[], action: CartAction): Car
         )
         .filter((l) => l.quantity > 0);
     case "remove":
-      return lines.filter((l) => l.variantId !== action.variantId);
+      return lines.filter(
+        (l) => !(l.variantId === action.variantId && l.stockUnitId === action.stockUnitId),
+      );
     case "clear":
       return [];
   }

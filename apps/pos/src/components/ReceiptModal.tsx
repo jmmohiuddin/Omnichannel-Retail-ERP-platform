@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { Receipt, SaleResult } from "../lib/api.js";
+import type { Receipt, SalePaymentPayload, SaleResult } from "../lib/api.js";
 import type { CartLine, CartTotals } from "../lib/cart.js";
 import { formatMinor } from "../lib/money.js";
 
@@ -10,16 +10,22 @@ export type CompletedSale =
       /** null when the receipt fetch failed — totals from the sale response. */
       receipt: Receipt | null;
       lines: CartLine[];
-      payment: "cash" | "card";
+      payments: SalePaymentPayload[];
     }
   | {
       mode: "offline";
       saleId: string;
       totals: CartTotals;
       lines: CartLine[];
-      payment: "cash" | "card";
+      payments: SalePaymentPayload[];
       currency: string;
     };
+
+const METHOD_LABELS: Record<SalePaymentPayload["method"], string> = {
+  cash: "Cash",
+  card: "Card",
+  loyalty_points: "Loyalty points",
+};
 
 interface Props {
   completed: CompletedSale;
@@ -62,7 +68,7 @@ export function ReceiptModal({ completed, onNewSale }: Props) {
         }))
       : completed.lines.map((l, i) => ({
           key: `c${i}`,
-          name: l.name,
+          name: l.imei !== undefined ? `${l.name} — IMEI ${l.imei}` : l.name,
           quantity: l.quantity,
           totalMinor: l.unitPriceMinor * l.quantity,
         }));
@@ -104,10 +110,15 @@ export function ReceiptModal({ completed, onNewSale }: Props) {
             <dt>Total</dt>
             <dd className="mono">{formatMinor(totals.totalMinor, currency)}</dd>
           </div>
-          <div>
-            <dt>Paid by</dt>
-            <dd>{completed.payment === "cash" ? "Cash" : "Card"}</dd>
-          </div>
+          {completed.payments.map((p, i) => (
+            <div key={`p${i}`}>
+              <dt>{i === 0 ? "Paid by" : " "}</dt>
+              <dd>
+                {METHOD_LABELS[p.method]}{" "}
+                <span className="mono">{formatMinor(p.amountMinor, currency)}</span>
+              </dd>
+            </div>
+          ))}
         </dl>
 
         <button type="button" ref={newSaleRef} className="btn btn-primary btn-block" onClick={onNewSale}>

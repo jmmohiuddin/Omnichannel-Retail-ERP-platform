@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cartReducer, cartTotals, lineTotalMinor, type CartLine } from "./cart.js";
+import { cartReducer, cartTotals, hasStockUnit, lineTotalMinor, type CartLine } from "./cart.js";
 
 const phone = {
   variantId: "v-phone",
@@ -73,6 +73,37 @@ describe("cartReducer", () => {
     expect(cart[0]!.quantity).toBe(1);
     cart = cartReducer(cart, { type: "increment", variantId: "v-phone" });
     expect(cart[0]!.quantity).toBe(1);
+  });
+
+  it("decrement never touches a serialized line — qty stays locked at 1", () => {
+    const serialized = { ...phone, stockUnitId: "unit-1", imei: "490154203237518" };
+    let cart = cartReducer([], { type: "add", line: serialized });
+    cart = cartReducer(cart, { type: "decrement", variantId: "v-phone" });
+    expect(cart).toHaveLength(1);
+    expect(cart[0]!.quantity).toBe(1);
+    expect(cart[0]!.imei).toBe("490154203237518");
+  });
+
+  it("two different units of the same variant are separate lines", () => {
+    let cart = cartReducer([], { type: "add", line: { ...phone, stockUnitId: "unit-1" } });
+    cart = cartReducer(cart, { type: "add", line: { ...phone, stockUnitId: "unit-2" } });
+    expect(cart).toHaveLength(2);
+    expect(cart.every((l) => l.quantity === 1)).toBe(true);
+  });
+
+  it("remove with stockUnitId removes only that unit's line", () => {
+    let cart = cartReducer([], { type: "add", line: { ...phone, stockUnitId: "unit-1" } });
+    cart = cartReducer(cart, { type: "add", line: { ...phone, stockUnitId: "unit-2" } });
+    cart = cartReducer(cart, { type: "remove", variantId: "v-phone", stockUnitId: "unit-1" });
+    expect(cart).toHaveLength(1);
+    expect(cart[0]!.stockUnitId).toBe("unit-2");
+  });
+
+  it("hasStockUnit is the duplicate-unit guard for scan handling", () => {
+    const cart = cartReducer([], { type: "add", line: { ...phone, stockUnitId: "unit-1" } });
+    expect(hasStockUnit(cart, "unit-1")).toBe(true);
+    expect(hasStockUnit(cart, "unit-2")).toBe(false);
+    expect(hasStockUnit([], "unit-1")).toBe(false);
   });
 });
 

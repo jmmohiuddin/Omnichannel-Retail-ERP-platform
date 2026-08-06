@@ -23,6 +23,8 @@ import { FulfillmentError, FulfillmentService } from "./sales/fulfillmentService
 import { OpsError, OpsService } from "./inventory/opsService.js";
 import { AnalyticsService } from "./analytics/analyticsService.js";
 import { FinanceError, FinanceService } from "./finance/financeService.js";
+import { LoyaltyError, LoyaltyService } from "./crm/loyaltyService.js";
+import { WmsError, WmsService } from "./wms/wmsService.js";
 import { AiBudgetError, AiGateway, StubProvider } from "./ai/gateway.js";
 import { AnthropicProvider } from "./ai/anthropicProvider.js";
 import { generateDailyDigest } from "./ai/digest.js";
@@ -107,7 +109,8 @@ export function buildPgApp(config: PgAppConfig) {
   const tokens = new TokenService(config.jwtSecret);
   const auth = new AuthService(db, tokens);
   const inventory = new PgInventoryService(db);
-  const sales = new SalesService(db, inventory);
+  const loyalty = new LoyaltyService(db);
+  const sales = new SalesService(db, inventory, loyalty);
   const receiving = new ReceivingService(db, inventory);
   const refunds = new RefundService(db, inventory);
   const webOrders = new WebOrderService(db, inventory);
@@ -115,6 +118,7 @@ export function buildPgApp(config: PgAppConfig) {
   const ops = new OpsService(db, inventory);
   const analytics = new AnalyticsService(db);
   const finance = new FinanceService(db);
+  const wms = new WmsService(db);
   const aiGateway = new AiGateway(
     config.anthropicApiKey
       ? new AnthropicProvider({ apiKey: config.anthropicApiKey })
@@ -169,6 +173,18 @@ export function buildPgApp(config: PgAppConfig) {
         err.code === "SESSION_NOT_FOUND" || err.code === "TRANSFER_NOT_FOUND" ||
         err.code === "COUNT_NOT_FOUND" ? 404
         : 409;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
+    if (err instanceof WmsError) {
+      const status =
+        err.code === "ALREADY_EXISTS" || err.code === "BAD_STATE" ? 409
+        : err.code === "SHORT_PICK" ? 422
+        : err.code.endsWith("NOT_FOUND") ? 404
+        : 400;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
+    if (err instanceof LoyaltyError) {
+      const status = err.code === "CUSTOMER_NOT_FOUND" ? 404 : 422;
       return reply.code(status).send({ error: err.code, message: err.message });
     }
     if (err instanceof FinanceError) {
@@ -471,6 +487,162 @@ export function buildPgApp(config: PgAppConfig) {
       return reply.code(201).send({ id, ...parsed.data });
     });
 
+    const wmsRole = (req: { auth: AccessClaims }) =>
+      requireRole(req, "owner", "manager", "warehouse");
+
+    secured.post("/v1/wms/zones", async (req, reply) => {
+      if (!wmsRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const parsed = z
+        .object({
+          locationId: z.string().uuid(),
+          code: z.string().min(1).max(16),
+          name: z.string().min(1).max(60),
+          position: z.number().int().min(0).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return reply.code(201).send(await wms.createZone(req.auth.tenantId, parsed.data));
+    });
+
+    secured.post("/v1/wms/bins", async (req, reply) => {
+      if (!wmsRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const parsed = z
+        .object({
+          zoneId: z.string().uuid(),
+          code: z.string().min(1).max(16),
+          position: z.number().int().min(0).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return reply.code(201).send(await wms.createBin(req.auth.tenantId, parsed.data));
+    });
+
+    secured.post("/v1/wms/bins/:binId/assign", async (req, reply) => {
+      if (!wmsRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const { binId } = req.params as { binId: string };
+      const parsed = z.object({ variantId: z.string().uuid() }).safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return wms.assignBin(req.auth.tenantId, { binId, variantId: parsed.data.variantId });
+    });
+
+    secured.get("/v1/wms/locations/:locationId/layout", async (req) => {
+      const { locationId } = req.params as { locationId: string };
+      return { zones: await wms.locationLayout(req.auth.tenantId, locationId) };
+    });
+
+    secured.post("/v1/wms/pick-lists", async (req, reply) => {
+      if (!wmsRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const parsed = z.object({ orderId: z.string().uuid() }).safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await wms.createPickList(
+        req.auth.tenantId, req.auth.userId, parsed.data.orderId,
+      );
+      return reply.code(201).send(result);
+    });
+
+    secured.get("/v1/wms/pick-lists/:pickListId", async (req) => {
+      const { pickListId } = req.params as { pickListId: string };
+      return wms.getPickList(req.auth.tenantId, pickListId);
+    });
+
+    secured.put("/v1/wms/pick-lists/:pickListId/picks", async (req, reply) => {
+      if (!wmsRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const { pickListId } = req.params as { pickListId: string };
+      const parsed = z
+        .object({
+          picks: z.array(
+            z.object({ variantId: z.string().uuid(), pickedQty: z.number().nonnegative() }),
+          ).min(1),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return wms.recordPicks(req.auth.tenantId, req.auth.userId, pickListId, parsed.data.picks);
+    });
+
+    secured.post("/v1/wms/pick-lists/:pickListId/complete", async (req, reply) => {
+      if (!wmsRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const { pickListId } = req.params as { pickListId: string };
+      return wms.completePickList(req.auth.tenantId, req.auth.userId, pickListId);
+    });
+
+    secured.get("/v1/devices", async (req) => {
+      const rows = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `SELECT id, kind, name, location_id AS "locationId", status
+             FROM device WHERE status <> 'revoked' ORDER BY name`,
+        );
+        return rows;
+      });
+      return { items: rows };
+    });
+
+    secured.get("/v1/orders", async (req) => {
+      const q = z
+        .object({
+          status: z.enum(["pending", "confirmed", "fulfilling", "fulfilled", "completed",
+                          "cancelled", "refunded", "partially_refunded"]).optional(),
+          limit: z.coerce.number().int().min(1).max(200).default(50),
+        })
+        .parse(req.query);
+      const rows = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `SELECT o.id, o.order_no AS "orderNo", o.status, ch.kind AS "channelKind",
+                  coalesce(cu.full_name, o.meta->>'customerName') AS "customerName",
+                  o.total_minor AS "totalMinor", o.currency, o.placed_at AS "placedAt"
+             FROM sales_order o
+             JOIN channel ch ON ch.id = o.channel_id
+             LEFT JOIN customer cu ON cu.id = o.customer_id
+            WHERE ($1::text IS NULL OR o.status = $1)
+            ORDER BY o.placed_at DESC LIMIT $2`,
+          [q.status ?? null, q.limit],
+        );
+        return rows.map((r) => ({ ...r, totalMinor: Number(r.totalMinor) }));
+      });
+      return { items: rows };
+    });
+
+    secured.get("/v1/customers", async (req) => {
+      const q = z.object({ query: z.string().trim().max(100).optional() }).parse(req.query);
+      const rows = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `SELECT id, full_name AS "fullName", phone, email,
+                  loyalty_points AS "loyaltyPoints"
+             FROM customer
+            WHERE $1::text IS NULL OR full_name ILIKE '%'||$1||'%'
+               OR phone ILIKE '%'||$1||'%' OR email::text ILIKE '%'||$1||'%'
+            ORDER BY full_name LIMIT 20`,
+          [q.query ?? null],
+        );
+        return rows.map((r) => ({ ...r, loyaltyPoints: Number(r.loyaltyPoints) }));
+      });
+      return { items: rows };
+    });
+
+    secured.post("/v1/customers", async (req, reply) => {
+      const parsed = z
+        .object({
+          fullName: z.string().min(1).max(120),
+          phone: z.string().min(5).max(30).optional(),
+          email: z.string().email().optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const id = randomUUID();
+      await db.withTenant(req.auth.tenantId, (c) =>
+        c.query(
+          "INSERT INTO customer (id, tenant_id, full_name, phone, email) VALUES ($1,$2,$3,$4,$5)",
+          [id, req.auth.tenantId, parsed.data.fullName,
+           parsed.data.phone ?? null, parsed.data.email ?? null],
+        ),
+      );
+      return reply.code(201).send({ id, ...parsed.data, loyaltyPoints: 0 });
+    });
+
+    secured.get("/v1/customers/:customerId/loyalty", async (req) => {
+      const { customerId } = req.params as { customerId: string };
+      return loyalty.balance(req.auth.tenantId, customerId);
+    });
+
     secured.post("/v1/pos/sales", async (req, reply) => {
       const parsed = z
         .object({
@@ -478,6 +650,7 @@ export function buildPgApp(config: PgAppConfig) {
           deviceId: z.string().uuid(),
           locationId: z.string().uuid(),
           customerName: z.string().max(120).optional(),
+          customerId: z.string().uuid().optional(),
           offlineCreated: z.boolean().optional(),
           occurredAt: z.coerce.date().optional(),
           lines: z.array(
@@ -491,7 +664,7 @@ export function buildPgApp(config: PgAppConfig) {
           ).min(1),
           payments: z.array(
             z.object({
-              method: z.enum(["cash", "card"]),
+              method: z.enum(["cash", "card", "loyalty_points"]),
               amountMinor: z.number().int().positive(),
             }),
           ).min(1),

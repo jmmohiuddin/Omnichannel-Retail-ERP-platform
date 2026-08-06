@@ -8,6 +8,10 @@ import { CatalogPage } from "./pages/Catalog.js";
 import { InventoryPage } from "./pages/Inventory.js";
 import { VariantDetailPage } from "./pages/VariantDetail.js";
 import { AuditPage } from "./pages/Audit.js";
+import { ApprovalsPage } from "./pages/Approvals.js";
+import { OrdersPage } from "./pages/Orders.js";
+import { FinancePage } from "./pages/Finance.js";
+import { DigestPage } from "./pages/Digest.js";
 
 function useSession(): Session | null {
   return useSyncExternalStore(subscribe, getSession, getSession);
@@ -26,6 +30,10 @@ function Shell({ session }: { session: Session }) {
           </NavLink>
           <NavLink to="/catalog">Catalog</NavLink>
           <NavLink to="/inventory">Inventory</NavLink>
+          <NavLink to="/orders">Orders</NavLink>
+          <NavLink to="/approvals">Approvals</NavLink>
+          <NavLink to="/finance">Finance</NavLink>
+          <NavLink to="/digest">Digest</NavLink>
           <NavLink to="/audit">Audit</NavLink>
         </nav>
         <div className="session">
@@ -65,6 +73,10 @@ export function App() {
         <Route path="/catalog" element={<CatalogPage />} />
         <Route path="/inventory" element={<InventoryPage />} />
         <Route path="/inventory/:variantId" element={<VariantDetailPage />} />
+        <Route path="/orders" element={<OrdersPage />} />
+        <Route path="/approvals" element={<ApprovalsPage />} />
+        <Route path="/finance" element={<FinancePage />} />
+        <Route path="/digest" element={<DigestPage />} />
         <Route path="/audit" element={<AuditPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

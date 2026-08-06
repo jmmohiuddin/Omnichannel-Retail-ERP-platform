@@ -26,7 +26,10 @@ packages/
                              layer; endpoint paths flagged UNVERIFIED pending API docs)
 apps/
   api/                       @omniretail/api — Fastify HTTP API: auth/RBAC, catalog,
-                             ledger inventory, POS sales + VAT receipts, refund approvals
+                             ledger inventory (serialized IMEI), POS sales + VAT receipts,
+                             OMS fulfillment, approvals (refunds/counts), cash sessions,
+                             transfers, WMS picking, loyalty, finance journals, analytics
+                             + AI narration gateway
   worker/                    @omniretail/worker — outbox relay → BullMQ + channel-sync
                              event consumer (connector fan-out)
   pos/                       @omniretail/pos — POS web app (Vite/React; Tauri shell later —

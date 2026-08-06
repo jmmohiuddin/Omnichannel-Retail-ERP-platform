@@ -399,6 +399,74 @@ body {
   font-size: 1.1rem;
 }
 
+.cart-line-imei {
+  font-size: 0.8rem;
+}
+
+/* ---------- Customer panel ---------- */
+
+.customer-panel {
+  padding-inline: 1rem;
+  padding-block: 0.75rem;
+  border-block-start: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}
+
+.customer-search {
+  inline-size: 100%;
+}
+
+.customer-results {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-block-size: 14rem;
+  overflow-y: auto;
+}
+
+.customer-create-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.customer-phone {
+  flex: 1;
+  min-inline-size: 0;
+}
+
+.customer-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding-inline: 0.9rem;
+  padding-block: 0.4rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--bg);
+}
+
+.customer-chip-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.customer-chip-points {
+  flex: 1;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.warn-text {
+  color: var(--warning);
+  margin-block: 0.5rem;
+}
+
 /* ---------- Totals & tender ---------- */
 
 .totals {
@@ -429,6 +497,23 @@ body {
   color: var(--text);
   font-size: 1.5rem;
   font-weight: 700;
+}
+
+.loyalty-row {
+  padding-inline: 1rem;
+  padding-block-end: 0.75rem;
+}
+
+.btn-loyalty {
+  inline-size: 100%;
+  min-block-size: var(--touch);
+  letter-spacing: 0.04em;
+}
+
+.btn-loyalty-active {
+  border-color: var(--warning);
+  color: var(--warning);
+  font-variant-numeric: tabular-nums;
 }
 
 .tender-row {

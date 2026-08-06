@@ -59,6 +59,36 @@ export interface ProductSummary {
   variants: VariantSummary[];
 }
 
+/** A serialized (IMEI/serial-tracked) unit as returned by /v1/stock-units. */
+export interface StockUnit {
+  id: string;
+  variantId: string;
+  imei1?: string;
+  imei2?: string;
+  serialNo?: string;
+  state: string;
+  locationId?: string;
+  sku: string;
+  priceMinor: number;
+  currency: string;
+  productName: string;
+}
+
+export interface CustomerSummary {
+  id: string;
+  fullName: string;
+  phone?: string | null;
+  email?: string | null;
+  loyaltyPoints: number;
+}
+
+export interface LoyaltyBalance {
+  points: number;
+  /** Redeemable value of the points, in fils. */
+  valueMinor: number;
+  history: unknown[];
+}
+
 export interface SaleLinePayload {
   variantId: string;
   quantity: number;
@@ -66,8 +96,10 @@ export interface SaleLinePayload {
   stockUnitId?: string;
 }
 
+export type TenderMethod = "cash" | "card";
+
 export interface SalePaymentPayload {
-  method: "cash" | "card";
+  method: TenderMethod | "loyalty_points";
   amountMinor: number;
 }
 
@@ -76,6 +108,7 @@ export interface SalePayload {
   id: string;
   deviceId: string;
   locationId: string;
+  customerId?: string;
   customerName?: string;
   lines: SaleLinePayload[];
   payments: SalePaymentPayload[];
@@ -115,6 +148,41 @@ export interface Receipt {
     currency?: string;
   };
   [key: string]: unknown;
+}
+
+/**
+ * Best-effort extraction of the server's error message from an ApiError body.
+ * The API errors as `{ code, message }` or `{ error: { code, message } }`;
+ * both shapes (and a bare `{ error: "…" }`) are handled defensively.
+ */
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  if (!(err instanceof ApiError)) return fallback;
+  const body = err.body;
+  if (body === null || typeof body !== "object") return fallback;
+  const record = body as Record<string, unknown>;
+  if (typeof record.error === "string" && record.error.length > 0) return record.error;
+  for (const candidate of [record, record.error]) {
+    if (candidate !== null && typeof candidate === "object") {
+      const message = (candidate as Record<string, unknown>).message;
+      if (typeof message === "string" && message.length > 0) return message;
+    }
+  }
+  return fallback;
+}
+
+/** The machine-readable error code (e.g. INSUFFICIENT_POINTS), if present. */
+export function apiErrorCode(err: unknown): string | null {
+  if (!(err instanceof ApiError)) return null;
+  const body = err.body;
+  if (body === null || typeof body !== "object") return null;
+  const record = body as Record<string, unknown>;
+  for (const candidate of [record, record.error]) {
+    if (candidate !== null && typeof candidate === "object") {
+      const code = (candidate as Record<string, unknown>).code;
+      if (typeof code === "string" && code.length > 0) return code;
+    }
+  }
+  return null;
 }
 
 type TokenGetter = () => string | null;
@@ -167,6 +235,27 @@ export function createApiClient(getToken: TokenGetter) {
     },
     getReceipt(orderId: string): Promise<Receipt> {
       return request(`/v1/orders/${orderId}/receipt`, { method: "GET" }, getToken);
+    },
+    /** Serialized unit lookup by exact IMEI — 404 when no unit carries it. */
+    getStockUnitByImei(imei: string): Promise<StockUnit> {
+      return request(
+        `/v1/stock-units?imei=${encodeURIComponent(imei)}`,
+        { method: "GET" },
+        getToken,
+      );
+    },
+    searchCustomers(query: string): Promise<{ items: CustomerSummary[] }> {
+      return request(
+        `/v1/customers?query=${encodeURIComponent(query)}`,
+        { method: "GET" },
+        getToken,
+      );
+    },
+    createCustomer(input: { fullName: string; phone?: string }): Promise<CustomerSummary> {
+      return request("/v1/customers", { method: "POST", body: JSON.stringify(input) }, getToken);
+    },
+    getLoyalty(customerId: string): Promise<LoyaltyBalance> {
+      return request(`/v1/customers/${customerId}/loyalty`, { method: "GET" }, getToken);
     },
     getAvailability(
       variantId: string,

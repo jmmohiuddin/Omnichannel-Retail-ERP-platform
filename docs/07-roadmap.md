@@ -2,16 +2,23 @@
 
 Phases are cumulative; each ends with a releasable increment, updated docs, and tests.
 
-> **Status (2026-08-06):** Phase 0 complete. Phase 1 largely complete (auth/RBAC,
-> catalog, ledger inventory incl. serialized IMEI receiving+sale, POS web app,
-> admin portal, migrations/CI/dev-env; Tauri shell pending — requires Rust
-> toolchain). Phase 2 partially complete: POS+web orders with reservations,
-> refunds with manager approvals, storefront app, connector SDK + Noon skeleton,
-> outbox relay + channel-sync worker. Phase 3 started: statistical AI baseline
-> (forecast/reorder/dead-stock), analytics summary, exception reports.
-> Not yet built: payment-gateway capture, courier/shipping, WMS bins/picking,
-> finance journals, CRM loyalty flows, LLM narration layer, marketplace order
-> import loop, mobile app.
+> **Status (2026-08-06, end of day):** Phases 0–3 delivered. Core platform:
+> auth/RBAC/MFA-ready sessions, catalog, ledger inventory with serialized IMEI
+> lifecycle, POS web app (offline queue, IMEI scan, loyalty tender), admin
+> portal (catalog/stock/audit/approvals/orders/finance/AI digest), storefront,
+> OMS (reservations→fulfillment/cancel/expiry), refunds & count corrections
+> behind two-person approvals, cash sessions with blind reconciliation,
+> transfers, WMS v1 (zones/bins/guided picking), CRM loyalty (earn/redeem
+> ledger), double-entry finance journals + trial balance/P&L, connector SDK +
+> Noon skeleton, marketplace order import, outbox relay + channel sync + jobs,
+> statistical AI (forecast/reorder/dead-stock) with Claude narration gateway.
+>
+> **Deliberately deferred (external prerequisites, per owner decision):**
+> payment-gateway capture (needs merchant accounts: Network Intl/Telr/Stripe
+> AE/Tabby), Tauri desktop shell (needs Rust toolchain), live marketplace
+> credentials (Noon endpoint paths flagged UNVERIFIED), UAE e-invoicing
+> transmission (mandate phasing), courier APIs, mobile companion app,
+> per-bin stock quantities (WMS v2), COGS journal entries.
 
 ## Phase 0 — Foundations (this repo state)
 Architecture + ADRs, PRD, integration & security design, core database schema,

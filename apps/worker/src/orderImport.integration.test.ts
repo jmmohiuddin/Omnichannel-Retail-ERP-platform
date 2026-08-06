@@ -201,7 +201,7 @@ describe.skipIf(!run)("OrderImportService", () => {
     );
     expect(movements).toHaveLength(2);
     expect(movements.map((m) => m.id).sort()).toEqual(
-      [orderLineMovementId("ORD-1", 0), orderLineMovementId("ORD-1", 1)].sort(),
+      [orderLineMovementId(channelId, "ORD-1", 0), orderLineMovementId(channelId, "ORD-1", 1)].sort(),
     );
     for (const m of movements) {
       expect(m.movement_type).toBe("reservation");

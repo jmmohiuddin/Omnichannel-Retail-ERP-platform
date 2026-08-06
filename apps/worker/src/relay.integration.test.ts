@@ -32,6 +32,9 @@ describe.skipIf(!run)("OutboxRelay", () => {
       "INSERT INTO tenant (id, name, slug) VALUES ($1,'Relay Test',$2)",
       [tenantId, `relay-${tenantId.slice(0, 8)}`],
     );
+    // Other suites sharing this database leave unrelayed outbox rows behind;
+    // mark them relayed so batch-content assertions below are deterministic.
+    await admin.query("UPDATE outbox SET relayed_at = now() WHERE relayed_at IS NULL");
   }, 30_000);
 
   afterAll(async () => {
@@ -49,23 +52,33 @@ describe.skipIf(!run)("OutboxRelay", () => {
     return id;
   };
 
+  /** Sibling test files insert their own outbox rows concurrently, so all
+   *  assertions are scoped to THIS tenant's events, and draining loops until
+   *  the relay reports an empty batch. */
+  const drain = async (relay: OutboxRelay): Promise<void> => {
+    for (let i = 0; i < 100; i++) {
+      if ((await relay.runOnce()) === 0) return;
+    }
+    throw new Error("outbox did not drain");
+  };
+
   it("publishes pending events once, in sequence order, and marks them relayed", async () => {
     const a = await insertEvent("inventory.level.changed");
     const b = await insertEvent("order.created");
 
     const publisher = new MemoryPublisher();
     const relay = new OutboxRelay(worker, publisher, 50);
+    await drain(relay);
 
-    const first = await relay.runOnce();
-    expect(first).toBeGreaterThanOrEqual(2);
-    const ids = publisher.published.map((e) => e.id);
+    const ids = publisher.published.filter((e) => e.tenantId === tenantId).map((e) => e.id);
     expect(ids).toContain(a);
     expect(ids).toContain(b);
     expect(ids.indexOf(a)).toBeLessThan(ids.indexOf(b)); // sequence order
 
-    // Drained: second run publishes nothing new.
-    const second = await relay.runOnce();
-    expect(second).toBe(0);
+    // Exactly-once effect: draining again never re-publishes our events.
+    const publisher2 = new MemoryPublisher();
+    await drain(new OutboxRelay(worker, publisher2, 50));
+    expect(publisher2.published.map((e) => e.id)).not.toContain(a);
 
     const { rows } = await admin.query(
       "SELECT relayed_at FROM outbox WHERE id = ANY($1)",
@@ -90,7 +103,7 @@ describe.skipIf(!run)("OutboxRelay", () => {
 
     // A healthy relay picks it up afterwards.
     const publisher = new MemoryPublisher();
-    await new OutboxRelay(worker, publisher, 50).runOnce();
+    await drain(new OutboxRelay(worker, publisher, 50));
     expect(publisher.published.some((e) => e.id === id)).toBe(true);
   });
 });

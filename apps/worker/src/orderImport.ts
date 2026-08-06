@@ -14,13 +14,21 @@ export interface ImportSummary {
 }
 
 /**
- * Deterministic movement id per (channel order, line): retrying an import can
- * never post the same reservation twice — the stock_movement PK is the
- * idempotency backstop. Same scheme as saleLineMovementId (sha256 → UUIDv4
- * format) in apps/api/src/sales/salesService.ts.
+ * Deterministic movement id per (channel, channel order, line): retrying an
+ * import can never post the same reservation twice — the stock_movement PK is
+ * the idempotency backstop. Same scheme as saleLineMovementId (sha256 →
+ * UUIDv4 format) in apps/api/src/sales/salesService.ts.
+ *
+ * The channel id MUST be part of the derivation: stock_movement.id is a
+ * global primary key, and external order ids are only unique per channel —
+ * two channels (or two tenants) can both have an "ORD-1".
  */
-export function orderLineMovementId(externalId: string, lineIndex: number): string {
-  const digest = createHash("sha256").update(`${externalId}:${lineIndex}`).digest();
+export function orderLineMovementId(
+  channelId: string,
+  externalId: string,
+  lineIndex: number,
+): string {
+  const digest = createHash("sha256").update(`${channelId}:${externalId}:${lineIndex}`).digest();
   const bytes = Buffer.from(digest.subarray(0, 16));
   bytes[6] = (bytes[6]! & 0x0f) | 0x40;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
@@ -250,7 +258,7 @@ export class OrderImportService {
       );
 
       // Reservation movement: on_hand → reserved at the fulfilling location.
-      const movementId = orderLineMovementId(order.externalId, i);
+      const movementId = orderLineMovementId(channelId, order.externalId, i);
       const { rows: mv } = await c.query<{ seq: string }>(
         `INSERT INTO stock_movement
            (id, tenant_id, occurred_at, movement_type, variant_id, quantity,

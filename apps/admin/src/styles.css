@@ -486,3 +486,91 @@ details[open].variants > summary::before {
   justify-content: center;
   padding-block: var(--space-4);
 }
+
+/* ---------- status tabs (orders) ---------- */
+
+.tabs {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-block-end: var(--space-4);
+}
+
+.tabs button {
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding-block: var(--space-1);
+  padding-inline: var(--space-3);
+  font-weight: 500;
+}
+.tabs button:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+.tabs button.active {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* ---------- row actions & inline errors ---------- */
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.actions button {
+  padding-block: 2px;
+  padding-inline: var(--space-3);
+}
+
+.row-error {
+  display: block;
+  color: var(--color-danger);
+  font-size: 12px;
+  margin-block-start: var(--space-1);
+  max-inline-size: 320px;
+  white-space: normal;
+}
+
+/* ---------- modal (receipt) ---------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(10 16 22 / 0.5);
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  z-index: 20;
+}
+
+.modal {
+  inline-size: 100%;
+  max-inline-size: 620px;
+  max-block-size: 85vh;
+  overflow: auto;
+}
+
+/* ---------- digest & raw JSON ---------- */
+
+.digest-text {
+  white-space: pre-wrap; /* preserve the digest's paragraph breaks */
+  font-size: 15px;
+  line-height: 1.7;
+  max-inline-size: 70ch;
+}
+
+.raw-json {
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  overflow-x: auto;
+  margin-block: var(--space-2) 0;
+}
