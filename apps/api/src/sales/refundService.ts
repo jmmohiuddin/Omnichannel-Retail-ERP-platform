@@ -36,6 +36,7 @@ export class RefundService {
   constructor(
     private readonly db: Db,
     private readonly inventory: PgInventoryService,
+    private readonly audit: import("../audit/auditService.js").AuditService,
   ) {}
 
   async requestRefund(
@@ -134,6 +135,13 @@ export class RefundService {
             WHERE id = $1`,
           [approvalId, approve ? "approved" : "rejected", approver.userId],
         );
+        await this.audit.recordWith(c, tenantId, {
+          actorUserId: approver.userId,
+          action: "approval.decided",
+          entityType: "approval",
+          entityId: approvalId,
+          after: { approve, kind: approval.kind, requestedBy: approval.requested_by },
+        });
 
         if (!approve) {
           await c.query(

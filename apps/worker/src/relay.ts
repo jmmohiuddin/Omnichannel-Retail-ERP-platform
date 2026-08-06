@@ -79,6 +79,17 @@ export class OutboxRelay {
     }
   }
 
+  /** Prune relayed rows past the retention window (ADR-006). Returns rows removed. */
+  async pruneRelayed(olderThanDays = 7): Promise<number> {
+    const res = await this.pool.query(
+      `DELETE FROM outbox
+        WHERE relayed_at IS NOT NULL
+          AND relayed_at < now() - ($1 || ' days')::interval`,
+      [olderThanDays],
+    );
+    return res.rowCount ?? 0;
+  }
+
   /** Poll until stopped. Backs off to intervalMs when the table is drained. */
   async runForever(intervalMs: number, signal?: AbortSignal): Promise<void> {
     while (!signal?.aborted) {

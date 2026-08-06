@@ -14,6 +14,10 @@ failures return `{error: "VALIDATION", issues: [...]}` (400). Generated-source o
 | POST `/v1/auth/login` | slug, email, password | tokens |
 | POST `/v1/auth/refresh` | tenantId, refreshToken | rotated tokens (old refresh is dead) |
 
+MFA (authenticated): POST `/v1/auth/mfa/enroll` → `{base32, otpauthUri}`;
+POST `/v1/auth/mfa/activate` `{code}` — after activation, login requires `mfaCode`
+(401 `MFA_REQUIRED` / `INVALID_MFA` otherwise). RFC 6238 TOTP, secrets AES-GCM-encrypted.
+
 ## Public storefront (no auth)
 
 | Method & path | Notes |
@@ -103,6 +107,15 @@ failures return `{error: "VALIDATION", issues: [...]}` (400). Generated-source o
 | POST `/v1/finance/refunds/:id/post` | post refund reversal (idempotent) |
 | GET `/v1/finance/trial-balance` | per-account totals; `netMinor` is always 0 |
 | GET `/v1/finance/pnl?from=&to=` | ISO datetimes; revenue, refunds, COGS, VAT |
+
+## Audit & channels
+
+| Method & path | Notes |
+| --- | --- |
+| GET `/v1/audit?limit=` | manager+; hash-chained trail of sensitive actions (user.created, mfa.enabled, approval.decided, cash_session.closed) |
+| GET `/v1/audit/verify` | manager+; recomputes the whole chain → `{valid, entries, brokenAtId?}` |
+| GET/POST `/v1/channels` | list / create marketplace channel `{kind,name,connector,config}` |
+| PUT `/v1/channels/:id/listings/:variantId` | publish/update listing `{published,bufferQty,priceMinor?}` — feeds the channel-sync worker |
 
 ## Analytics & AI
 

@@ -6,7 +6,7 @@
   "description": "Tauri desktop shell around @omniretail/pos (native webview, ~10x lighter than Electron — ADR-007)",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build --no-bundle",
+    "build": "sh ./build.sh",
     "bundle": "tauri build",
     "typecheck": "true",
     "test": "true"

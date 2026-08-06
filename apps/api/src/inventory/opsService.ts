@@ -26,6 +26,7 @@ export class OpsService {
   constructor(
     private readonly db: Db,
     private readonly inventory: PgInventoryService,
+    private readonly audit: import("../audit/auditService.js").AuditService,
   ) {}
 
   // ---- cash sessions -------------------------------------------------------
@@ -96,6 +97,13 @@ export class OpsService {
            JSON.stringify({ sessionId, varianceMinor })],
         );
       }
+      await this.audit.recordWith(c, tenantId, {
+        actorUserId: userId,
+        action: "cash_session.closed",
+        entityType: "cash_session",
+        entityId: sessionId,
+        after: { expectedMinor, declaredMinor, varianceMinor },
+      });
       return { expectedMinor, declaredMinor, varianceMinor };
     });
   }

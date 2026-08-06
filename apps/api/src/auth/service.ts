@@ -2,12 +2,25 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
 import { hashPassword, verifyPassword } from "./passwords.js";
 import { TokenService, hashRefreshToken, newRefreshToken } from "./tokens.js";
+import {
+  decryptSecret,
+  encryptSecret,
+  generateTotpSecret,
+  otpauthUri,
+  verifyTotp,
+} from "./totp.js";
 
 const REFRESH_TTL_DAYS = 30;
 
 export class AuthError extends Error {
   constructor(
-    readonly code: "INVALID_CREDENTIALS" | "INVALID_REFRESH" | "SLUG_TAKEN" | "UNKNOWN_ROLE",
+    readonly code:
+      | "INVALID_CREDENTIALS"
+      | "INVALID_REFRESH"
+      | "SLUG_TAKEN"
+      | "UNKNOWN_ROLE"
+      | "MFA_REQUIRED"
+      | "INVALID_MFA",
   ) {
     super(code);
     this.name = "AuthError";
@@ -39,6 +52,9 @@ export class AuthService {
   constructor(
     private readonly db: Db,
     private readonly tokens: TokenService,
+    /** App secret for MFA secret encryption (JWT secret in v1). */
+    private readonly appSecret: string,
+    private readonly audit?: import("../audit/auditService.js").AuditService,
   ) {}
 
   async registerTenant(input: RegisterInput): Promise<TokenPair> {
@@ -95,7 +111,53 @@ export class AuthService {
     return this.issue(tenantId, userId, ["owner"]);
   }
 
-  async login(slug: string, email: string, password: string): Promise<TokenPair> {
+  /** Step 1 of MFA enrollment: mint a secret, return it for the authenticator app. */
+  async enrollMfa(
+    tenantId: string,
+    userId: string,
+  ): Promise<{ base32: string; otpauthUri: string }> {
+    const { secret, base32 } = generateTotpSecret();
+    const email = await this.db.withTenant(tenantId, async (c) => {
+      const { rows } = await c.query<{ email: string | null }>(
+        "SELECT email FROM app_user WHERE id = $1",
+        [userId],
+      );
+      if (!rows[0]) throw new AuthError("INVALID_CREDENTIALS");
+      // Not enabled until a code is verified — losing the phone mid-enrollment
+      // must not lock the account.
+      await c.query(
+        "UPDATE app_user SET totp_secret_enc = $2, mfa_enabled = false WHERE id = $1",
+        [userId, encryptSecret(secret, this.appSecret)],
+      );
+      return rows[0].email ?? "user";
+    });
+    return { base32, otpauthUri: otpauthUri(base32, email) };
+  }
+
+  /** Step 2: prove possession of the authenticator, then enforce MFA at login. */
+  async activateMfa(tenantId: string, userId: string, code: string): Promise<{ enabled: true }> {
+    await this.db.withTenant(tenantId, async (c) => {
+      const { rows } = await c.query<{ totp_secret_enc: Buffer | null }>(
+        "SELECT totp_secret_enc FROM app_user WHERE id = $1",
+        [userId],
+      );
+      const enc = rows[0]?.totp_secret_enc;
+      if (!enc) throw new AuthError("INVALID_MFA");
+      if (!verifyTotp(decryptSecret(enc, this.appSecret), code, Date.now())) {
+        throw new AuthError("INVALID_MFA");
+      }
+      await c.query("UPDATE app_user SET mfa_enabled = true WHERE id = $1", [userId]);
+      await this.audit?.recordWith(c, tenantId, {
+        actorUserId: userId,
+        action: "mfa.enabled",
+        entityType: "app_user",
+        entityId: userId,
+      });
+    });
+    return { enabled: true };
+  }
+
+  async login(slug: string, email: string, password: string, mfaCode?: string): Promise<TokenPair> {
     const tenant = await this.db.withPlatform(async (c) => {
       const { rows } = await c.query<{ id: string }>(
         "SELECT id FROM tenant WHERE slug = $1 AND status = 'active'",
@@ -106,8 +168,11 @@ export class AuthService {
     if (!tenant) throw new AuthError("INVALID_CREDENTIALS");
 
     const user = await this.db.withTenant(tenant.id, async (c) => {
-      const { rows } = await c.query<{ id: string; password_hash: string | null; roles: string[] }>(
-        `SELECT u.id, u.password_hash,
+      const { rows } = await c.query<{
+        id: string; password_hash: string | null; roles: string[];
+        mfa_enabled: boolean; totp_secret_enc: Buffer | null;
+      }>(
+        `SELECT u.id, u.password_hash, u.mfa_enabled, u.totp_secret_enc,
                 coalesce(array_agg(r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles
            FROM app_user u
            LEFT JOIN user_role ur ON ur.user_id = u.id
@@ -120,6 +185,13 @@ export class AuthService {
     });
     if (!user?.password_hash || !(await verifyPassword(password, user.password_hash))) {
       throw new AuthError("INVALID_CREDENTIALS");
+    }
+    if (user.mfa_enabled) {
+      if (!mfaCode) throw new AuthError("MFA_REQUIRED");
+      if (!user.totp_secret_enc ||
+          !verifyTotp(decryptSecret(user.totp_secret_enc, this.appSecret), mfaCode, Date.now())) {
+        throw new AuthError("INVALID_MFA");
+      }
     }
     return this.issue(tenant.id, user.id, user.roles);
   }
@@ -146,6 +218,12 @@ export class AuthService {
         "INSERT INTO user_role (user_id, role_id, tenant_id) VALUES ($1,$2,$3)",
         [userId, role.rows[0].id, tenantId],
       );
+      await this.audit?.recordWith(c, tenantId, {
+        action: "user.created",
+        entityType: "app_user",
+        entityId: userId,
+        after: { email: input.email, role: input.role },
+      });
     });
     return { userId };
   }

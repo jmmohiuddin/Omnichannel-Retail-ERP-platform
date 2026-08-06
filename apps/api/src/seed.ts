@@ -24,7 +24,7 @@ if (!adminUrl || !appUrl) {
 await migrate(adminUrl);
 
 const db = new Db(appUrl);
-const auth = new AuthService(db, new TokenService(jwtSecret));
+const auth = new AuthService(db, new TokenService(jwtSecret), jwtSecret);
 const inventory = new PgInventoryService(db);
 
 const owner = await auth.registerTenant({

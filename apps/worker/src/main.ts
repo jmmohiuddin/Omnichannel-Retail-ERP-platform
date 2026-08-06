@@ -21,6 +21,13 @@ const janitorTimer = setInterval(() => {
   janitor.runOnce().catch((err) => console.error("janitor:", err.message));
 }, 60_000);
 
+const pruneTimer = setInterval(() => {
+  relay
+    .pruneRelayed(7)
+    .then((n) => { if (n) console.log(`outbox retention: pruned ${n} relayed rows`); })
+    .catch((err) => console.error("outbox prune:", err.message));
+}, 6 * 60 * 60_000);
+
 const { DriftCheck } = await import("./driftCheck.js");
 const driftCheck = new DriftCheck(pool);
 const driftTimer = setInterval(() => {
@@ -40,6 +47,7 @@ console.log("outbox relay + event consumer + reservation janitor running");
 await relay.runForever(500, abort.signal);
 clearInterval(janitorTimer);
 clearInterval(driftTimer);
+clearInterval(pruneTimer);
 await consumer.close();
 await publisher.close();
 await pool.end();

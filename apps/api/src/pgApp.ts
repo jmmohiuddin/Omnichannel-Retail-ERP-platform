@@ -30,6 +30,7 @@ import { PaymentError, PaymentService } from "./payments/paymentService.js";
 import { MockCourier } from "./shipping/courierPort.js";
 import { ShippingError, ShippingService } from "./shipping/shippingService.js";
 import { EInvoiceService } from "./einvoice/einvoiceService.js";
+import { AuditService } from "./audit/auditService.js";
 import { AiBudgetError, AiGateway, StubProvider } from "./ai/gateway.js";
 import { AnthropicProvider } from "./ai/anthropicProvider.js";
 import { generateDailyDigest } from "./ai/digest.js";
@@ -53,6 +54,7 @@ const loginSchema = z.object({
   slug: z.string(),
   email: z.string().email(),
   password: z.string(),
+  mfaCode: z.string().regex(/^\d{6}$/).optional(),
 });
 
 const locationSchema = z.object({
@@ -114,15 +116,16 @@ export function buildPgApp(config: PgAppConfig) {
   const app = Fastify({ logger: false });
   const db = new Db(config.databaseUrl);
   const tokens = new TokenService(config.jwtSecret);
-  const auth = new AuthService(db, tokens);
+  const audit = new AuditService(db);
+  const auth = new AuthService(db, tokens, config.jwtSecret, audit);
   const inventory = new PgInventoryService(db);
   const loyalty = new LoyaltyService(db);
   const sales = new SalesService(db, inventory, loyalty);
   const receiving = new ReceivingService(db, inventory);
-  const refunds = new RefundService(db, inventory);
+  const refunds = new RefundService(db, inventory, audit);
   const webOrders = new WebOrderService(db, inventory);
   const fulfillment = new FulfillmentService(db, inventory);
-  const ops = new OpsService(db, inventory);
+  const ops = new OpsService(db, inventory, audit);
   const analytics = new AnalyticsService(db);
   const finance = new FinanceService(db);
   const wms = new WmsService(db);
@@ -243,7 +246,9 @@ export function buildPgApp(config: PgAppConfig) {
   app.post("/v1/auth/login", async (req, reply) => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) return sendZodError(reply, parsed.error.issues);
-    return auth.login(parsed.data.slug, parsed.data.email, parsed.data.password);
+    return auth.login(
+      parsed.data.slug, parsed.data.email, parsed.data.password, parsed.data.mfaCode,
+    );
   });
 
   app.post("/v1/auth/refresh", async (req, reply) => {
@@ -383,6 +388,98 @@ export function buildPgApp(config: PgAppConfig) {
 
     const requireRole = (req: { auth: AccessClaims }, ...roles: string[]): boolean =>
       req.auth.roles.some((r) => roles.includes(r));
+
+    secured.post("/v1/auth/mfa/enroll", async (req) =>
+      auth.enrollMfa(req.auth.tenantId, req.auth.userId),
+    );
+
+    secured.post("/v1/auth/mfa/activate", async (req, reply) => {
+      const parsed = z.object({ code: z.string().regex(/^\d{6}$/) }).safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return auth.activateMfa(req.auth.tenantId, req.auth.userId, parsed.data.code);
+    });
+
+    secured.get("/v1/audit", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      const q = z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) })
+        .parse(req.query);
+      return { items: await audit.list(req.auth.tenantId, q.limit) };
+    });
+
+    secured.get("/v1/audit/verify", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      return audit.verifyChain(req.auth.tenantId);
+    });
+
+    secured.post("/v1/channels", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      const parsed = z
+        .object({
+          kind: z.enum(["marketplace", "social", "custom"]),
+          name: z.string().min(1).max(60),
+          connector: z.string().min(1).max(40),
+          config: z.record(z.unknown()).default({}),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const id = randomUUID();
+      await db.withTenant(req.auth.tenantId, (c) =>
+        c.query(
+          `INSERT INTO channel (id, tenant_id, kind, name, connector, config, status)
+           VALUES ($1,$2,$3,$4,$5,$6,'active')`,
+          [id, req.auth.tenantId, parsed.data.kind, parsed.data.name,
+           parsed.data.connector, JSON.stringify(parsed.data.config)],
+        ),
+      );
+      return reply.code(201).send({ id, ...parsed.data });
+    });
+
+    secured.get("/v1/channels", async (req) => {
+      const rows = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `SELECT id, kind, name, connector, status FROM channel ORDER BY name`,
+        );
+        return rows;
+      });
+      return { items: rows };
+    });
+
+    secured.put("/v1/channels/:channelId/listings/:variantId", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      const { channelId, variantId } = req.params as { channelId: string; variantId: string };
+      const parsed = z
+        .object({
+          published: z.boolean().default(true),
+          bufferQty: z.number().nonnegative().default(0),
+          priceMinor: z.number().int().nonnegative().optional(),
+          externalId: z.string().optional(),
+        })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      await db.withTenant(req.auth.tenantId, (c) =>
+        c.query(
+          `INSERT INTO channel_listing
+             (tenant_id, channel_id, variant_id, published, buffer_qty, price_minor, external_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
+           ON CONFLICT (tenant_id, channel_id, variant_id)
+           DO UPDATE SET published = EXCLUDED.published, buffer_qty = EXCLUDED.buffer_qty,
+                         price_minor = EXCLUDED.price_minor,
+                         external_id = coalesce(EXCLUDED.external_id, channel_listing.external_id)`,
+          [req.auth.tenantId, channelId, variantId, parsed.data.published,
+           parsed.data.bufferQty, parsed.data.priceMinor ?? null,
+           parsed.data.externalId ?? null],
+        ),
+      );
+      return { channelId, variantId, ...parsed.data };
+    });
 
     secured.post("/v1/users", async (req, reply) => {
       if (!requireRole(req, "owner")) {
