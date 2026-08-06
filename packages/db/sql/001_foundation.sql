@@ -13,8 +13,8 @@ CREATE TABLE tenant (
     id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name           text NOT NULL,
     slug           text NOT NULL UNIQUE,
-    base_currency  char(3) NOT NULL DEFAULT 'USD',
-    timezone       text NOT NULL DEFAULT 'UTC',
+    base_currency  char(3) NOT NULL DEFAULT 'AED',   -- launch market: UAE (docs/08)
+    timezone       text NOT NULL DEFAULT 'Asia/Dubai',
     plan           text NOT NULL DEFAULT 'trial',
     status         text NOT NULL DEFAULT 'active'
                    CHECK (status IN ('active','suspended','closed')),

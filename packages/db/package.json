@@ -2,10 +2,23 @@
   "name": "@omniretail/db",
   "version": "0.1.0",
   "type": "module",
-  "description": "SQL-first PostgreSQL migrations for OmniRetail OS (apply sql/ in order)",
+  "description": "SQL-first PostgreSQL migrations + runner for OmniRetail OS",
+  "main": "./dist/migrate.js",
+  "types": "./dist/migrate.d.ts",
+  "exports": { ".": "./dist/migrate.js" },
+  "bin": { "omniretail-migrate": "./dist/migrate.js" },
   "scripts": {
-    "build": "true",
-    "typecheck": "true",
-    "test": "true"
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "true",
+    "migrate": "node dist/migrate.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "typescript": "^5.7.0"
   }
 }

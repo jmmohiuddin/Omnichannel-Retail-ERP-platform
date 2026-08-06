@@ -78,11 +78,3 @@ export function buildServer() {
   return app;
 }
 
-const isMain = process.argv[1]?.endsWith("server.ts") || process.argv[1]?.endsWith("server.js");
-if (isMain) {
-  const app = buildServer();
-  const port = Number(process.env.PORT ?? 3001);
-  app.listen({ port, host: "0.0.0.0" }).then(() => {
-    console.log(`OmniRetail API listening on :${port}`);
-  });
-}

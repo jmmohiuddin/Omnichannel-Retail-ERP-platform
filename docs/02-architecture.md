@@ -35,7 +35,7 @@ flowchart TB
     RD[(Redis - BullMQ queues, cache, rate limits)]
 
     subgraph Workers
-        SYNC[Connector Workers - Shopify, Amazon, eBay, Daraz, ...]
+        SYNC[Connector Workers - Noon, Amazon.ae, Shopify, ...]
         JOBS[Job Workers - emails, receipts, reports, reconciliation]
         AIW[AI Workers - forecasts, anomaly scans, content gen]
     end

@@ -14,6 +14,10 @@
 - Money is stored as `BIGINT` minor units + currency code. Quantities are `NUMERIC(14,3)`.
   Never use floats for money or stock.
 - Tests: vitest. Domain rules require tests before merge; test files sit next to source
-  as `*.test.ts`.
+  as `*.test.ts`. Postgres integration tests (`*.integration.test.ts`) auto-skip unless
+  `ADMIN_DATABASE_URL` (schema owner) and `DATABASE_URL` (omniretail_app role) are set;
+  locally: `createdb omniretail_test` then run the api test script with both URLs.
+- Target market is UAE/Dubai: AED default currency, 5% VAT with TRN invoices, bilingual
+  EN/AR + RTL UI, Noon/Amazon.ae connectors first — see docs/08-uae-localization.md.
 - Requirement IDs from `docs/prd/01-product-requirements.md` (e.g. `INV-003`) are cited in
   commit messages and doc cross-references when implementing them.

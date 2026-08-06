@@ -1,0 +1,35 @@
+export {
+  CommandLog,
+  LocalInventoryMirror,
+  commandToMovements,
+  type CashSessionCloseCommand,
+  type CashSessionOpenCommand,
+  type CommandStatus,
+  type CommandStore,
+  type PaymentMethod,
+  type PosCommand,
+  type PosCommandInput,
+  type PosCommandType,
+  type ReturnCommand,
+  type SaleCommand,
+  type SaleLine,
+  type StoredCommand,
+} from "./commandLog.js";
+export {
+  SyncEngine,
+  type ConflictSink,
+  type CursorStore,
+  type PullPage,
+  type PushResult,
+  type PushStatus,
+  type SyncConflict,
+  type SyncEngineDeps,
+  type SyncEngineOptions,
+  type SyncReport,
+  type SyncTransport,
+} from "./syncEngine.js";
+export {
+  InMemoryCommandStore,
+  InMemoryConflictSink,
+  InMemoryCursorStore,
+} from "./stores/memory.js";

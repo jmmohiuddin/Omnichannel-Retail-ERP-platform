@@ -48,3 +48,4 @@ The API expects PostgreSQL 16+; apply migrations in `packages/db/sql/` in order.
 | [docs/integrations/](docs/integrations) | Connector SDK, marketplace APIs, sync policies |
 | [docs/security/](docs/security) | Threat model, RBAC/RLS, fraud-prevention controls |
 | [docs/07-roadmap.md](docs/07-roadmap.md) | Phased delivery plan |
+| [docs/08-uae-localization.md](docs/08-uae-localization.md) | UAE/Dubai market spec: VAT+TRN, AED, Arabic/RTL, gateways, Noon/Amazon.ae |

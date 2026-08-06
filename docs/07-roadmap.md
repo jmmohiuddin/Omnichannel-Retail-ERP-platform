@@ -21,9 +21,9 @@ Architecture + ADRs, PRD, integration & security design, core database schema,
 
 ## Phase 2 — Omnichannel
 - OMS: unified orders, reservations, fulfillment, returns/refunds with approval workflows
-- E-commerce storefront v1 (catalog, cart, checkout with Stripe/SSLCommerz/bKash
-  tokenized payments, order tracking, accounts)
-- Connector SDK + first connectors: Shopify, WooCommerce, Daraz; sync health dashboard
+- E-commerce storefront v1 (catalog, cart, checkout with UAE gateways — Network
+  International/Telr/Stripe AE, Tabby/Tamara BNPL — tokenized, order tracking, accounts)
+- Connector SDK + first connectors: Noon, Amazon.ae (SP-API), Shopify; sync health dashboard
 - CRM v1: customers, purchase history, loyalty points; digital receipts
 - Notifications (email/SMS/WhatsApp templates), courier/shipping integration interface
 - **Exit criteria:** an online order and a POS sale contend safely for the last unit;
@@ -35,7 +35,7 @@ Architecture + ADRs, PRD, integration & security design, core database schema,
 - AI module v1: demand forecast + reorder suggestions, dead-stock detection,
   description/SEO generation, daily executive digest, exception-report summarizer
 - Analytics dashboards; employee performance; fraud exception reports
-- Marketplace wave 2: Amazon SP-API, eBay, TikTok Shop (per capability matrix)
+- Marketplace wave 2: Dubizzle (used devices), WooCommerce, eBay, TikTok Shop (per capability matrix)
 - **Exit criteria:** measurable forecast MAPE reporting; fraud exception digest in daily use.
 
 ## Phase 4 — Scale & enterprise

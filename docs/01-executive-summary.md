@@ -10,8 +10,11 @@ channels), e-commerce, CRM/loyalty, and an AI layer (forecasting, reorder sugges
 dead-stock detection, content generation, executive briefings).
 
 Initial beachhead market: **mobile-phone and electronics retailers** (serialized inventory,
-IMEI tracking, high fraud exposure, thin margins) in South Asia and similar markets, then
-general retail. This niche is underserved: horizontal ERPs (Odoo, ERPNext) handle serialized
+IMEI tracking, high fraud exposure, thin margins) in the **UAE — Dubai first** (Deira's
+mobile-phone trade corridor being the archetype customer), then the wider GCC and general
+retail. UAE specifics — AED, 5% VAT with TRN invoicing, bilingual English/Arabic (RTL),
+Amazon.ae/Noon marketplaces, PDPL — are specified in
+[08-uae-localization.md](08-uae-localization.md). This niche is underserved: horizontal ERPs (Odoo, ERPNext) handle serialized
 stock poorly at POS speed; POS SaaS (Square, Lightspeed) lacks deep IMEI/warranty/repair
 workflows and marketplace-grade sync.
 
