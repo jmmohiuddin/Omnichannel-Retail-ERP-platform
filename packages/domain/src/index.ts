@@ -1,5 +1,6 @@
 export * from "./inventory/types.js";
 export * from "./tax.js";
+export * from "./forecast.js";
 export { MOVEMENT_RULES, validateMovementShape } from "./inventory/rules.js";
 export { InventoryLedger, type LedgerOptions } from "./inventory/ledger.js";
 export {

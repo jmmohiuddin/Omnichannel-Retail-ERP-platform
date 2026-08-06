@@ -2,6 +2,17 @@
 
 Phases are cumulative; each ends with a releasable increment, updated docs, and tests.
 
+> **Status (2026-08-06):** Phase 0 complete. Phase 1 largely complete (auth/RBAC,
+> catalog, ledger inventory incl. serialized IMEI receiving+sale, POS web app,
+> admin portal, migrations/CI/dev-env; Tauri shell pending — requires Rust
+> toolchain). Phase 2 partially complete: POS+web orders with reservations,
+> refunds with manager approvals, storefront app, connector SDK + Noon skeleton,
+> outbox relay + channel-sync worker. Phase 3 started: statistical AI baseline
+> (forecast/reorder/dead-stock), analytics summary, exception reports.
+> Not yet built: payment-gateway capture, courier/shipping, WMS bins/picking,
+> finance journals, CRM loyalty flows, LLM narration layer, marketplace order
+> import loop, mobile app.
+
 ## Phase 0 — Foundations (this repo state)
 Architecture + ADRs, PRD, integration & security design, core database schema,
 `@omniretail/domain` inventory ledger engine with unit tests, API skeleton.

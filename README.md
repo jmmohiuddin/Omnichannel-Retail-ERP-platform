@@ -15,17 +15,31 @@ docs/                        Product, architecture, integration, and security do
   integrations/              Connector SDK + marketplace integration architecture
   security/                  Security architecture + fraud-prevention controls
 packages/
-  domain/                    @omniretail/domain — pure TypeScript domain core:
-                             inventory ledger, availability math, serialized-stock
-                             (IMEI) rules, movement posting invariants. No I/O.
-  db/                        @omniretail/db — PostgreSQL DDL migrations (SQL-first)
+  domain/                    @omniretail/domain — pure TS domain core: inventory ledger,
+                             VAT math, serialized-stock (IMEI) rules. No I/O.
+  pos-core/                  @omniretail/pos-core — offline-first POS command log +
+                             sync engine (storage-agnostic; Tauri plugs SQLite in later)
+  db/                        @omniretail/db — SQL-first migrations + checksum-verified runner
+  connector-sdk/             @omniretail/connector-sdk — marketplace connector contract,
+                             token-bucket rate limiting, retry/backoff, registry
+  connector-noon/            @omniretail/connector-noon — Noon connector (tested mapping
+                             layer; endpoint paths flagged UNVERIFIED pending API docs)
 apps/
-  api/                       @omniretail/api — Fastify HTTP API (modular monolith host)
+  api/                       @omniretail/api — Fastify HTTP API: auth/RBAC, catalog,
+                             ledger inventory, POS sales + VAT receipts, refund approvals
+  worker/                    @omniretail/worker — outbox relay → BullMQ + channel-sync
+                             event consumer (connector fan-out)
+  pos/                       @omniretail/pos — POS web app (Vite/React; Tauri shell later —
+                             requires the Rust toolchain via rustup, not yet installed here)
+  admin/                     @omniretail/admin — admin portal (dashboard, catalog,
+                             stock levels, audit ledger)
+  storefront/                @omniretail/storefront — customer store: catalog, cart,
+                             checkout (creates reserved web orders; gateway capture TBD)
 ```
 
-Planned (see [docs/07-roadmap.md](docs/07-roadmap.md)): `apps/admin` (Next.js),
-`apps/pos` (Tauri desktop), `apps/storefront` (Next.js), `apps/mobile` (Expo),
-`packages/connector-sdk` + `connectors/*`.
+Remaining roadmap (see [docs/07-roadmap.md](docs/07-roadmap.md) status note): payment
+gateway capture, marketplace order-import loop, WMS depth, finance journals, LLM
+narration over the statistical AI baseline, mobile companion, Tauri POS shell.
 
 ## Getting started
 

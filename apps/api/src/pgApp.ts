@@ -15,7 +15,11 @@ import { Db } from "./db.js";
 import { AuthError, AuthService } from "./auth/service.js";
 import { TokenService, type AccessClaims } from "./auth/tokens.js";
 import { PgInventoryService } from "./inventory/pgInventory.js";
+import { ReceivingService } from "./inventory/receivingService.js";
 import { SaleError, SalesService } from "./sales/salesService.js";
+import { RefundError, RefundService } from "./sales/refundService.js";
+import { WebOrderService } from "./sales/webOrderService.js";
+import { AnalyticsService } from "./analytics/analyticsService.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -96,6 +100,10 @@ export function buildPgApp(config: PgAppConfig) {
   const auth = new AuthService(db, tokens);
   const inventory = new PgInventoryService(db);
   const sales = new SalesService(db, inventory);
+  const receiving = new ReceivingService(db, inventory);
+  const refunds = new RefundService(db, inventory);
+  const webOrders = new WebOrderService(db, inventory);
+  const analytics = new AnalyticsService(db);
 
   // Browser clients (admin portal, POS webview). Tokens travel in the
   // Authorization header — no cookies — so a permissive dev origin is safe;
@@ -128,7 +136,16 @@ export function buildPgApp(config: PgAppConfig) {
         err.code === "PAYMENT_MISMATCH" ? 422
         : err.code === "UNKNOWN_VARIANT" ? 404
         : err.code === "DUPLICATE_SALE" ? 409
+        : err.code === "UNIT_UNAVAILABLE" ? 409
         : 400;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
+    if (err instanceof RefundError) {
+      const status =
+        err.code === "ORDER_NOT_FOUND" || err.code === "APPROVAL_NOT_FOUND" ? 404
+        : err.code === "SELF_APPROVAL" || err.code === "FORBIDDEN_ROLE" ? 403
+        : err.code === "ALREADY_DECIDED" ? 409
+        : 422;
       return reply.code(status).send({ error: err.code, message: err.message });
     }
     app.log.error(err);
@@ -157,6 +174,38 @@ export function buildPgApp(config: PgAppConfig) {
       .safeParse(req.body);
     if (!parsed.success) return sendZodError(reply, parsed.error.issues);
     return auth.refreshForTenant(parsed.data.tenantId, parsed.data.refreshToken);
+  });
+
+  // ---- public storefront ----
+  app.get("/v1/public/:slug/catalog", async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    const tenant = await webOrders.resolveTenant(slug);
+    if (!tenant) return reply.code(404).send({ error: "NOT_FOUND" });
+    const items = await webOrders.publicCatalog(tenant.id);
+    return { tenant: { name: tenant.name, slug, currency: tenant.currency }, items };
+  });
+
+  app.post("/v1/public/:slug/orders", async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    const tenant = await webOrders.resolveTenant(slug);
+    if (!tenant) return reply.code(404).send({ error: "NOT_FOUND" });
+    const parsed = z
+      .object({
+        customer: z
+          .object({
+            name: z.string().min(1).max(120),
+            email: z.string().email().optional(),
+            phone: z.string().min(5).max(30).optional(),
+          })
+          .refine((v) => v.email || v.phone, { message: "email or phone required" }),
+        lines: z.array(
+          z.object({ variantId: z.string().uuid(), quantity: z.number().positive().max(100) }),
+        ).min(1).max(50),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+    const result = await webOrders.createOrder(tenant, parsed.data);
+    return reply.code(201).send(result);
   });
 
   // ---- authenticated ----
@@ -217,6 +266,102 @@ export function buildPgApp(config: PgAppConfig) {
         ),
       );
       return reply.code(201).send({ id, productId, ...parsed.data });
+    });
+
+    const requireRole = (req: { auth: AccessClaims }, ...roles: string[]): boolean =>
+      req.auth.roles.some((r) => roles.includes(r));
+
+    secured.post("/v1/users", async (req, reply) => {
+      if (!requireRole(req, "owner")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "owner role required" });
+      }
+      const parsed = z
+        .object({
+          email: z.string().email(),
+          password: z.string().min(10),
+          fullName: z.string().min(1),
+          role: z.enum(["manager", "cashier", "warehouse"]),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const created = await auth.createUser(req.auth.tenantId, parsed.data);
+      return reply.code(201).send(created);
+    });
+
+    secured.post("/v1/inventory/receipts", async (req, reply) => {
+      const parsed = z
+        .object({
+          locationId: z.string().uuid(),
+          deviceId: z.string().uuid().optional(),
+          reference: z.string().max(200).optional(),
+          lines: z.array(
+            z.object({
+              variantId: z.string().uuid(),
+              quantity: z.number().positive().optional(),
+              units: z.array(
+                z.object({
+                  imei1: z.string().optional(),
+                  imei2: z.string().optional(),
+                  serialNo: z.string().optional(),
+                  unitCostMinor: z.number().int().nonnegative().optional(),
+                }),
+              ).optional(),
+            }),
+          ).min(1),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await receiving.receive(req.auth.tenantId, req.auth.userId, parsed.data);
+      return reply.code(201).send(result);
+    });
+
+    secured.get("/v1/stock-units", async (req, reply) => {
+      const q = z
+        .object({ imei: z.string().optional(), serialNo: z.string().optional() })
+        .parse(req.query);
+      const unit = await receiving.findUnit(req.auth.tenantId, q);
+      if (!unit) return reply.code(404).send({ error: "NOT_FOUND" });
+      return unit;
+    });
+
+    secured.post("/v1/orders/:orderId/refunds", async (req, reply) => {
+      const { orderId } = req.params as { orderId: string };
+      const parsed = z
+        .object({
+          amountMinor: z.number().int().positive(),
+          reason: z.string().min(3).max(500),
+          method: z.enum(["cash", "card"]),
+          restock: z.array(
+            z.object({
+              variantId: z.string().uuid(),
+              quantity: z.number().positive(),
+              stockUnitId: z.string().uuid().optional(),
+            }),
+          ).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await refunds.requestRefund(
+        req.auth.tenantId, req.auth.userId, orderId, parsed.data,
+      );
+      return reply.code(201).send(result);
+    });
+
+    secured.get("/v1/approvals", async (req) => {
+      return { items: await refunds.listPendingApprovals(req.auth.tenantId) };
+    });
+
+    secured.post("/v1/approvals/:approvalId/decision", async (req, reply) => {
+      const { approvalId } = req.params as { approvalId: string };
+      const parsed = z.object({ approve: z.boolean() }).safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await refunds.decide(
+        req.auth.tenantId,
+        { userId: req.auth.userId, roles: req.auth.roles },
+        approvalId,
+        parsed.data.approve,
+      );
+      return result;
     });
 
     secured.get("/v1/locations", async (req) => {
@@ -360,6 +505,35 @@ export function buildPgApp(config: PgAppConfig) {
     secured.get("/v1/inventory/availability/:variantId/:locationId", async (req) => {
       const { variantId, locationId } = req.params as { variantId: string; locationId: string };
       return inventory.availability(req.auth.tenantId, variantId, locationId);
+    });
+
+    secured.get("/v1/analytics/summary", async (req) => analytics.summary(req.auth.tenantId));
+
+    secured.get("/v1/ai/reorder-suggestions", async (req) => {
+      const q = z
+        .object({
+          windowDays: z.coerce.number().int().min(7).max(365).default(56),
+          leadTimeDays: z.coerce.number().int().min(1).max(90).default(7),
+        })
+        .parse(req.query);
+      return { items: await analytics.reorderSuggestions(req.auth.tenantId, q) };
+    });
+
+    secured.get("/v1/ai/dead-stock", async (req) => {
+      const q = z
+        .object({ thresholdDays: z.coerce.number().int().min(14).max(730).default(90) })
+        .parse(req.query);
+      return { items: await analytics.deadStock(req.auth.tenantId, q.thresholdDays) };
+    });
+
+    secured.get("/v1/reports/exceptions", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      const q = z
+        .object({ sinceHours: z.coerce.number().int().min(1).max(720).default(24) })
+        .parse(req.query);
+      return analytics.exceptions(req.auth.tenantId, q.sinceHours);
     });
 
     secured.get("/v1/inventory/movements", async (req) => {

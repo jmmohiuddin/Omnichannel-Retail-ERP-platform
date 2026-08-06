@@ -24,7 +24,9 @@ export class SaleError extends Error {
       | "PAYMENT_MISMATCH"
       | "EMPTY_SALE"
       | "DUPLICATE_SALE"
-      | "NO_POS_CHANNEL",
+      | "NO_POS_CHANNEL"
+      | "SERIALIZED_REQUIRED"
+      | "UNIT_UNAVAILABLE",
     message: string,
   ) {
     super(message);
@@ -97,18 +99,57 @@ export class SalesService {
         // overrides arrive with approval workflows in a later increment).
         const variantIds = input.lines.map((l) => l.variantId);
         const { rows: variants } = await c.query<{
-          id: string; sku: string; price_minor: string; name: string;
+          id: string; sku: string; price_minor: string; name: string; tracking: string;
         }>(
-          `SELECT v.id, v.sku, v.price_minor, p.name
+          `SELECT v.id, v.sku, v.price_minor, p.name, p.tracking
              FROM variant v JOIN product p ON p.id = v.product_id
             WHERE v.id = ANY($1)`,
           [variantIds],
         );
         const byId = new Map(variants.map((v) => [v.id, v]));
         for (const line of input.lines) {
-          if (!byId.has(line.variantId)) {
+          const variant = byId.get(line.variantId);
+          if (!variant) {
             throw new SaleError("UNKNOWN_VARIANT", `variant ${line.variantId} not found`);
           }
+          // Serialized items sell as an exact scanned unit, never as a quantity
+          // (FP-003: scan enforcement — a phone can't leave stock anonymously).
+          if (variant.tracking === "serialized") {
+            if (!line.stockUnitId) {
+              throw new SaleError(
+                "SERIALIZED_REQUIRED",
+                `${variant.sku} is serialized: scan the unit's IMEI to sell it`,
+              );
+            }
+            if (line.quantity !== 1) {
+              throw new SaleError("SERIALIZED_REQUIRED", "serialized lines must have quantity 1");
+            }
+          }
+        }
+
+        // Claim serialized units: lock, validate, and mark sold inside this
+        // same transaction, so two registers can never sell the same phone.
+        for (const line of input.lines) {
+          if (!line.stockUnitId) continue;
+          const unit = await c.query<{ variant_id: string; state: string; location_id: string }>(
+            "SELECT variant_id, state, location_id FROM stock_unit WHERE id = $1 FOR UPDATE",
+            [line.stockUnitId],
+          );
+          const u = unit.rows[0];
+          if (!u || u.variant_id !== line.variantId) {
+            throw new SaleError("UNIT_UNAVAILABLE", "stock unit not found for this variant");
+          }
+          if (u.state !== "in_stock" || u.location_id !== input.locationId) {
+            throw new SaleError(
+              "UNIT_UNAVAILABLE",
+              `unit is ${u.state}${u.location_id !== input.locationId ? " at another location" : ""}`,
+            );
+          }
+          await c.query(
+            `UPDATE stock_unit SET state = 'sold', sold_order_id = $2, updated_at = now()
+              WHERE id = $1`,
+            [line.stockUnitId, input.id],
+          );
         }
 
         const computed: LineTotals[] = input.lines.map((l) =>

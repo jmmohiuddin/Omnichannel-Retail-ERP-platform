@@ -6,7 +6,9 @@ import { TokenService, hashRefreshToken, newRefreshToken } from "./tokens.js";
 const REFRESH_TTL_DAYS = 30;
 
 export class AuthError extends Error {
-  constructor(readonly code: "INVALID_CREDENTIALS" | "INVALID_REFRESH" | "SLUG_TAKEN") {
+  constructor(
+    readonly code: "INVALID_CREDENTIALS" | "INVALID_REFRESH" | "SLUG_TAKEN" | "UNKNOWN_ROLE",
+  ) {
     super(code);
     this.name = "AuthError";
   }
@@ -46,7 +48,7 @@ export class AuthService {
       await this.db.withPlatform(async (c) => {
         await c.query(
           "INSERT INTO tenant (id, name, slug, base_currency) VALUES ($1,$2,$3,$4)",
-          [tenantId, input.tenantName, input.slug, input.currency ?? "USD"],
+          [tenantId, input.tenantName, input.slug, input.currency ?? "AED"],
         );
       });
     } catch (err) {
@@ -61,11 +63,16 @@ export class AuthService {
          VALUES ($1,$2,$3,$4,$5,'active')`,
         [userId, tenantId, input.email, input.fullName, passwordHash],
       );
+      // System roles. Permission strings are coarse in v1; the role names are
+      // what approval/decision checks key on (manager and up may approve).
       const roleId = randomUUID();
       await c.query(
-        `INSERT INTO role (id, tenant_id, name, is_system, permissions)
-         VALUES ($1,$2,'owner',true,'{*}')`,
-        [roleId, tenantId],
+        `INSERT INTO role (id, tenant_id, name, is_system, permissions) VALUES
+           ($1,$5,'owner',true,'{*}'),
+           ($2,$5,'manager',true,'{sales.*,inventory.*,approvals.decide,catalog.*}'),
+           ($3,$5,'cashier',true,'{sales.create,catalog.read,inventory.read}'),
+           ($4,$5,'warehouse',true,'{inventory.*,catalog.read}')`,
+        [roleId, randomUUID(), randomUUID(), randomUUID(), tenantId],
       );
       await c.query(
         "INSERT INTO user_role (user_id, role_id, tenant_id) VALUES ($1,$2,$3)",
@@ -76,6 +83,13 @@ export class AuthService {
         `INSERT INTO channel (id, tenant_id, kind, name) VALUES
          ($1,$3,'pos','Main POS'), ($2,$3,'web','Web Store')`,
         [randomUUID(), randomUUID(), tenantId],
+      );
+      // System actor: attributes automated movements (web reservations, sync
+      // jobs) in the ledger. No password — it can never log in.
+      await c.query(
+        `INSERT INTO app_user (id, tenant_id, email, full_name, status)
+         VALUES ($1,$2,'system@omniretail.internal','System','active')`,
+        [randomUUID(), tenantId],
       );
     });
     return this.issue(tenantId, userId, ["owner"]);
@@ -108,6 +122,32 @@ export class AuthService {
       throw new AuthError("INVALID_CREDENTIALS");
     }
     return this.issue(tenant.id, user.id, user.roles);
+  }
+
+  /** Create an employee user with one system role (owner/admin action). */
+  async createUser(
+    tenantId: string,
+    input: { email: string; password: string; fullName: string; role: string },
+  ): Promise<{ userId: string }> {
+    const userId = randomUUID();
+    const passwordHash = await hashPassword(input.password);
+    await this.db.withTenant(tenantId, async (c) => {
+      const role = await c.query<{ id: string }>(
+        "SELECT id FROM role WHERE name = $1",
+        [input.role],
+      );
+      if (!role.rows[0]) throw new AuthError("UNKNOWN_ROLE");
+      await c.query(
+        `INSERT INTO app_user (id, tenant_id, email, full_name, password_hash, status)
+         VALUES ($1,$2,$3,$4,$5,'active')`,
+        [userId, tenantId, input.email, input.fullName, passwordHash],
+      );
+      await c.query(
+        "INSERT INTO user_role (user_id, role_id, tenant_id) VALUES ($1,$2,$3)",
+        [userId, role.rows[0].id, tenantId],
+      );
+    });
+    return { userId };
   }
 
   /**
