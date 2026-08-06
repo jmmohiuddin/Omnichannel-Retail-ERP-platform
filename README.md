@@ -37,7 +37,9 @@ apps/
   admin/                     @omniretail/admin — admin portal (dashboard, catalog,
                              stock levels, audit ledger)
   storefront/                @omniretail/storefront — customer store: catalog, cart,
-                             checkout (creates reserved web orders; gateway capture TBD)
+                             checkout, pay-now via gateway hosted checkout
+  mobile/                    @omniretail/mobile — Expo owner companion (dashboard,
+                             approvals, stock lookup; run via Expo Go)
 ```
 
 Remaining roadmap (see [docs/07-roadmap.md](docs/07-roadmap.md) status note): payment
@@ -60,6 +62,9 @@ The API expects PostgreSQL 16+; apply migrations in `packages/db/sql/` in order.
 | [docs/01-executive-summary.md](docs/01-executive-summary.md) | What we're building and why |
 | [docs/02-architecture.md](docs/02-architecture.md) | System architecture, deployment, data flow |
 | [docs/03-database-schema.md](docs/03-database-schema.md) | Schema design narrative + ER description |
+| [docs/04-api-reference.md](docs/04-api-reference.md) | Endpoint catalog for every module |
+| [docs/05-deployment-guide.md](docs/05-deployment-guide.md) | Production topology, roles, env, go-live checklist |
+| [docs/06-testing-strategy.md](docs/06-testing-strategy.md) | Test layers, conventions, bugs they caught |
 | [docs/adr/](docs/adr) | Individual decision records |
 | [docs/prd/](docs/prd) | PRD, personas, user stories, information architecture |
 | [docs/integrations/](docs/integrations) | Connector SDK, marketplace APIs, sync policies |

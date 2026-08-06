@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { Link, useLocation, useOutletContext, useParams } from "react-router-dom";
 import type { StoreContext } from "../App.js";
-import type { OrderResult } from "../lib/api.js";
+import { ApiError, startPayment, type OrderResult } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
 
 function isOrderResult(value: unknown): value is OrderResult {
@@ -15,6 +16,34 @@ export function ConfirmationPage() {
   const location = useLocation();
   const state = location.state as { result?: unknown } | null;
   const result = state && isOrderResult(state.result) ? state.result : null;
+
+  const [paying, setPaying] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
+
+  const payNow = async () => {
+    if (!result) return;
+    setPaying(true);
+    setPayError(null);
+    try {
+      const intent = await startPayment(slug, result.orderId);
+      if (intent.redirectUrl) {
+        // Hosted checkout: the gateway page takes it from here.
+        window.location.assign(intent.redirectUrl);
+        return;
+      }
+      setPayError("Payment started — follow the instructions sent to you.");
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "INTENT_EXISTS") {
+        setPayError("Payment for this order has already been started.");
+      } else if (err instanceof ApiError && err.code === "BAD_STATE") {
+        setPayError("This order can no longer be paid online — it may already be paid.");
+      } else {
+        setPayError("Could not start payment. Please try again.");
+      }
+    } finally {
+      setPaying(false);
+    }
+  };
 
   return (
     <section className="confirmation">
@@ -42,10 +71,23 @@ export function ConfirmationPage() {
 
       <div className="alert info" role="status">
         <p>
-          <strong>Payment pending.</strong> Your order is reserved and you'll receive payment
-          instructions shortly. Keep your order number handy.
+          <strong>Payment pending.</strong> Your order is reserved. Pay now to confirm it —
+          you'll be taken to a secure payment page.
         </p>
       </div>
+
+      {result && (
+        <p>
+          <button type="button" onClick={payNow} disabled={paying}>
+            {paying ? "Starting payment…" : "Pay now"}
+          </button>
+        </p>
+      )}
+      {payError && (
+        <div className="alert" role="alert">
+          <p>{payError}</p>
+        </div>
+      )}
 
       <p>
         <Link to={`/${slug}`} className="secondary button-like">

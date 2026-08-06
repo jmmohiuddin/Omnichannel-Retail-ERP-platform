@@ -86,3 +86,28 @@ export async function placeOrder(slug: string, payload: OrderPayload): Promise<O
   if (!res.ok) throw await errorFrom(res);
   return (await res.json()) as OrderResult;
 }
+
+export interface PaymentIntentResult {
+  intentId: string;
+  gatewayRef: string;
+  /** Hosted checkout page on the gateway — card data never touches this app. */
+  redirectUrl?: string;
+}
+
+/**
+ * Start payment for a pending order. Throws ApiError with code
+ * "INTENT_EXISTS" (409) when payment was already started, or
+ * "BAD_STATE" (409) when the order is no longer payable.
+ */
+export async function startPayment(slug: string, orderId: string): Promise<PaymentIntentResult> {
+  const res = await fetch(
+    `${API_BASE}/v1/public/${encodeURIComponent(slug)}/orders/${encodeURIComponent(orderId)}/pay`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    },
+  );
+  if (!res.ok) throw await errorFrom(res);
+  return (await res.json()) as PaymentIntentResult;
+}

@@ -21,6 +21,17 @@ const janitorTimer = setInterval(() => {
   janitor.runOnce().catch((err) => console.error("janitor:", err.message));
 }, 60_000);
 
+const { DriftCheck } = await import("./driftCheck.js");
+const driftCheck = new DriftCheck(pool);
+const driftTimer = setInterval(() => {
+  driftCheck
+    .runOnce()
+    .then((findings) => {
+      if (findings.length) console.error(`LEDGER DRIFT: ${findings.length} bucket(s) diverged`);
+    })
+    .catch((err) => console.error("drift-check:", err.message));
+}, 60 * 60_000);
+
 const abort = new AbortController();
 process.on("SIGINT", () => abort.abort());
 process.on("SIGTERM", () => abort.abort());
@@ -28,6 +39,7 @@ process.on("SIGTERM", () => abort.abort());
 console.log("outbox relay + event consumer + reservation janitor running");
 await relay.runForever(500, abort.signal);
 clearInterval(janitorTimer);
+clearInterval(driftTimer);
 await consumer.close();
 await publisher.close();
 await pool.end();
