@@ -2,6 +2,11 @@
  * Money helpers. The platform stores money as BIGINT minor units + currency
  * code (AED minor unit = fils, x100). Floats appear only at the display
  * boundary — never in stored or transmitted amounts.
+ *
+ * Deliberately locked to the `en-AE` locale even when the UI language is
+ * Arabic: UAE retail convention shows prices with Western numerals
+ * ("AED 1,299.50") in both languages, so currency formatting does not follow
+ * the i18n language toggle.
  */
 
 const formatters = new Map<string, Intl.NumberFormat>();

@@ -2,6 +2,7 @@ import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "r
 import { apiErrorMessage, type ApiClient, type CustomerSummary } from "../lib/api.js";
 import type { CustomerPanelAction, CustomerPanelState } from "../lib/customer.js";
 import { formatMinor } from "../lib/money.js";
+import { useLang } from "./LangProvider.js";
 
 interface Props {
   api: ApiClient;
@@ -19,8 +20,10 @@ const SEARCH_DEBOUNCE_MS = 250;
  * Keyboard-first: Enter in the search field attaches the first result.
  */
 export function CustomerPanel({ api, state, dispatch, onSettled }: Props) {
+  const { t } = useLang();
   const [phone, setPhone] = useState("");
   const [creating, setCreating] = useState(false);
+  // Server-authored message, or null; empty string = localized fallback.
   const [createError, setCreateError] = useState<string | null>(null);
 
   const query = state.query;
@@ -58,7 +61,7 @@ export function CustomerPanel({ api, state, dispatch, onSettled }: Props) {
       });
       attach(customer);
     } catch (err) {
-      setCreateError(apiErrorMessage(err, "Could not create the customer."));
+      setCreateError(apiErrorMessage(err, ""));
     } finally {
       setCreating(false);
     }
@@ -73,18 +76,21 @@ export function CustomerPanel({ api, state, dispatch, onSettled }: Props) {
 
   if (state.attached) {
     return (
-      <section className="customer-panel" aria-label="Customer">
+      <section className="customer-panel" aria-label={t("customer.sectionAria")}>
         <div className="customer-chip">
           <span className="customer-chip-name">{state.attached.fullName}</span>
           <span className="muted customer-chip-points">
             {state.loyalty
-              ? `Points: ${state.loyalty.points} (worth ${formatMinor(state.loyalty.valueMinor)})`
-              : `Points: ${state.attached.loyaltyPoints}`}
+              ? t("customer.pointsWorth", {
+                  points: state.loyalty.points,
+                  value: formatMinor(state.loyalty.valueMinor),
+                })
+              : t("customer.points", { points: state.attached.loyaltyPoints })}
           </span>
           <button
             type="button"
             className="btn btn-ghost btn-small"
-            aria-label={`Detach ${state.attached.fullName}`}
+            aria-label={t("customer.detachAria", { name: state.attached.fullName })}
             onClick={() => {
               dispatch({ type: "detach" });
               onSettled();
@@ -99,21 +105,21 @@ export function CustomerPanel({ api, state, dispatch, onSettled }: Props) {
 
   const q = query.trim();
   return (
-    <section className="customer-panel" aria-label="Customer">
+    <section className="customer-panel" aria-label={t("customer.sectionAria")}>
       <input
         className="search-input customer-search"
         value={query}
         onChange={(e) => dispatch({ type: "query", query: e.target.value })}
         onKeyDown={handleSearchKeyDown}
-        placeholder="Customer phone or name…"
+        placeholder={t("customer.searchPlaceholder")}
         autoComplete="off"
-        aria-label="Customer search"
+        aria-label={t("customer.searchAria")}
       />
       {q.length > 0 && (
-        <div className="customer-results" role="listbox" aria-label="Customer results">
-          {state.searching && <p className="muted result-hint">Searching…</p>}
+        <div className="customer-results" role="listbox" aria-label={t("customer.resultsAria")}>
+          {state.searching && <p className="muted result-hint">{t("search.searching")}</p>}
           {!state.searching && state.results.length === 0 && (
-            <p className="muted result-hint">No customer found.</p>
+            <p className="muted result-hint">{t("customer.noneFound")}</p>
           )}
           {state.results.map((c) => (
             <button type="button" key={c.id} className="result-row" onClick={() => attach(c)}>
@@ -121,7 +127,7 @@ export function CustomerPanel({ api, state, dispatch, onSettled }: Props) {
                 {c.fullName}
                 {c.phone && <span className="muted result-sku"> {c.phone}</span>}
               </span>
-              <span className="muted mono">{c.loyaltyPoints} pts</span>
+              <span className="muted mono">{t("customer.pts", { points: c.loyaltyPoints })}</span>
             </button>
           ))}
           <div className="customer-create-row">
@@ -129,9 +135,9 @@ export function CustomerPanel({ api, state, dispatch, onSettled }: Props) {
               className="search-input customer-phone"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="Phone (optional)"
+              placeholder={t("customer.phonePlaceholder")}
               autoComplete="off"
-              aria-label="New customer phone"
+              aria-label={t("customer.newPhoneAria")}
             />
             <button
               type="button"
@@ -139,12 +145,12 @@ export function CustomerPanel({ api, state, dispatch, onSettled }: Props) {
               disabled={creating}
               onClick={() => void create()}
             >
-              {creating ? "Creating…" : `New customer “${q}”`}
+              {creating ? t("customer.creating") : t("customer.create", { name: q })}
             </button>
           </div>
-          {createError && (
+          {createError !== null && (
             <p className="error-text" role="alert">
-              {createError}
+              {createError.length > 0 ? createError : t("customer.createFailed")}
             </p>
           )}
         </div>

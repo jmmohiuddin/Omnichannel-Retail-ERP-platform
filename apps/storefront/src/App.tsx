@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, NavLink, Outlet, Route, Routes, useParams } from "react-router-dom";
 import { ApiError, fetchCatalog, type Catalog } from "./lib/api.js";
+import { t, type MessageKey } from "./lib/i18n.js";
 import { useCart } from "./lib/useCart.js";
+import { useLang } from "./lib/useLang.js";
 import { CartPage } from "./pages/Cart.js";
 import { CatalogPage } from "./pages/Catalog.js";
 import { CheckoutPage } from "./pages/Checkout.js";
@@ -17,8 +19,10 @@ export interface StoreContext {
 
 function StoreLayout() {
   const { slug = "" } = useParams();
+  const { lang, setLang } = useLang();
   const [catalog, setCatalog] = useState<Catalog | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Error kind (not prose) so the message re-renders in the active language.
+  const [errorKey, setErrorKey] = useState<MessageKey | null>(null);
   const [loading, setLoading] = useState(true);
   const cart = useCart(slug);
 
@@ -31,7 +35,7 @@ function StoreLayout() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    setError(null);
+    setErrorKey(null);
     setCatalog(null);
     fetchCatalog(slug)
       .then((c) => {
@@ -40,9 +44,9 @@ function StoreLayout() {
       .catch((e: unknown) => {
         if (cancelled) return;
         if (e instanceof ApiError && e.status === 404) {
-          setError(`We couldn't find a store called “${slug}”.`);
+          setErrorKey("layout.storeNotFound");
         } else {
-          setError("The store is temporarily unavailable. Please try again shortly.");
+          setErrorKey("layout.storeUnavailable");
         }
       })
       .finally(() => {
@@ -61,44 +65,58 @@ function StoreLayout() {
         </Link>
         <nav aria-label="Store">
           <NavLink to={`/${slug}`} end>
-            Shop
+            {t(lang, "layout.shop")}
           </NavLink>
           <NavLink to={`/${slug}/cart`} className="cart-link">
-            Cart
+            {t(lang, "layout.cart")}
             {cart.count > 0 && (
-              <span className="cart-badge" aria-label={`${cart.count} items in cart`}>
+              <span
+                className="cart-badge"
+                aria-label={t(lang, "layout.cartBadge", { count: cart.count })}
+              >
                 {cart.count}
               </span>
             )}
           </NavLink>
+          <button
+            type="button"
+            className="lang-toggle"
+            aria-label={t(lang, "layout.langToggle")}
+            // The toggle names the *other* language, in that language.
+            lang={lang === "en" ? "ar" : "en"}
+            onClick={() => setLang(lang === "en" ? "ar" : "en")}
+          >
+            {lang === "en" ? "عربي" : "EN"}
+          </button>
         </nav>
       </header>
       <main className="store-page">
-        {loading && <p className="status-note">Loading store…</p>}
-        {!loading && error && (
+        {loading && <p className="status-note">{t(lang, "layout.loading")}</p>}
+        {!loading && errorKey && (
           <section className="empty-state">
-            <h1>Store not available</h1>
-            <p>{error}</p>
+            <h1>{t(lang, "layout.storeNotAvailable")}</h1>
+            <p>{t(lang, errorKey, { slug })}</p>
           </section>
         )}
-        {!loading && !error && catalog && (
+        {!loading && !errorKey && catalog && (
           <Outlet context={{ slug, catalog, reloadCatalog } satisfies StoreContext} />
         )}
       </main>
       <footer className="store-footer">
-        <p>All prices include 5% VAT. Powered by OmniRetail OS.</p>
+        <p>{t(lang, "layout.footer")}</p>
       </footer>
     </div>
   );
 }
 
 function NoStore() {
+  const { lang } = useLang();
   return (
     <main className="store-page">
       <section className="empty-state">
-        <h1>OmniRetail OS storefront</h1>
+        <h1>{t(lang, "layout.landingTitle")}</h1>
         <p>
-          Open a store by its address, e.g. <code>/your-store-name</code>.
+          {t(lang, "layout.landingBody")} <code>/your-store-name</code>.
         </p>
       </section>
     </main>

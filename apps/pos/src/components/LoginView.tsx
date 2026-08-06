@@ -1,18 +1,24 @@
 import { useState, type FormEvent } from "react";
 import { ApiError, isNetworkError, type ApiClient } from "../lib/api.js";
+import type { MessageKey, MessageParams } from "../lib/i18n.js";
 import type { StoredSession } from "../lib/session.js";
+import { LangToggle, useLang } from "./LangProvider.js";
 
 interface Props {
   api: ApiClient;
   onLoggedIn: (session: StoredSession) => void;
 }
 
+/** Errors are stored as keys so they re-render when the language flips. */
+type LoginError = { key: MessageKey; params?: MessageParams };
+
 export function LoginView({ api, onLoggedIn }: Props) {
+  const { t } = useLang();
   const [slug, setSlug] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<LoginError | null>(null);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -24,11 +30,15 @@ export function LoginView({ api, onLoggedIn }: Props) {
       onLoggedIn({ ...res, slug: slug.trim(), email: email.trim() });
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(err.status === 401 ? "Invalid store, email or password." : `Login failed (HTTP ${err.status}).`);
+        setError(
+          err.status === 401
+            ? { key: "login.invalidCredentials" }
+            : { key: "login.failedHttp", params: { status: err.status } },
+        );
       } else if (isNetworkError(err)) {
-        setError("Cannot reach the server. Check the connection and try again.");
+        setError({ key: "login.network" });
       } else {
-        setError("Login failed unexpectedly.");
+        setError({ key: "login.failedUnexpected" });
       }
     } finally {
       setBusy(false);
@@ -38,11 +48,14 @@ export function LoginView({ api, onLoggedIn }: Props) {
   return (
     <main className="centered-screen">
       <form className="panel login-panel" onSubmit={handleSubmit}>
+        <div className="panel-lang-row">
+          <LangToggle />
+        </div>
         <h1 className="brand">OmniRetail POS</h1>
-        <p className="muted">Sign in to this register</p>
+        <p className="muted">{t("login.subtitle")}</p>
 
         <label className="field">
-          <span>Store slug</span>
+          <span>{t("login.storeSlug")}</span>
           <input
             value={slug}
             onChange={(e) => setSlug(e.target.value)}
@@ -54,7 +67,7 @@ export function LoginView({ api, onLoggedIn }: Props) {
         </label>
 
         <label className="field">
-          <span>Email</span>
+          <span>{t("login.email")}</span>
           <input
             type="email"
             value={email}
@@ -66,7 +79,7 @@ export function LoginView({ api, onLoggedIn }: Props) {
         </label>
 
         <label className="field">
-          <span>Password</span>
+          <span>{t("login.password")}</span>
           <input
             type="password"
             value={password}
@@ -78,12 +91,12 @@ export function LoginView({ api, onLoggedIn }: Props) {
 
         {error && (
           <p className="error-text" role="alert">
-            {error}
+            {t(error.key, error.params)}
           </p>
         )}
 
         <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
-          {busy ? "Signing in…" : "Sign in"}
+          {busy ? t("login.signingIn") : t("login.signIn")}
         </button>
       </form>
     </main>

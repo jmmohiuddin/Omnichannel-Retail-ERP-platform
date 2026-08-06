@@ -11,7 +11,10 @@ export class WmsError extends Error {
       | "ALREADY_EXISTS"
       | "ZONE_NOT_FOUND"
       | "BIN_NOT_FOUND"
-      | "SHORT_PICK",
+      | "SHORT_PICK"
+      | "EXCEEDS_ON_HAND"
+      | "INSUFFICIENT_BIN_QTY"
+      | "CROSS_LOCATION",
     message: string,
   ) {
     super(message);
@@ -27,6 +30,22 @@ export interface PickListLine {
   pickedQty: number | null;
 }
 
+export interface BinStockLine {
+  variantId: string;
+  sku: string;
+  quantity: number;
+}
+
+export interface VariantPlacement {
+  /** stock_level.on_hand at the location — the ledger-derived truth. */
+  onHand: number;
+  /** Sum of bin_stock over the location's bins for this variant. */
+  binned: number;
+  /** on_hand − binned: stock physically present but not putaway ("floor"). */
+  unbinned: number;
+  bins: { binId: string; binPath: string; quantity: number }[];
+}
+
 export interface ZoneLayout {
   zoneId: string;
   code: string;
@@ -36,16 +55,21 @@ export interface ZoneLayout {
 }
 
 /**
- * v1 WMS: bin directory + guided picking.
+ * WMS: bin directory + guided picking + per-bin quantity OVERLAY (022).
  *
- * Deliberately NOT quantity-per-bin — stock quantities remain in stock_level,
- * maintained by the inventory ledger. Bins are a directory telling pickers
- * WHERE TO WALK for a variant; assignments and picks never write quantities.
+ * DESIGN DECISION — bin quantities are an overlay, not a second ledger. The
+ * movement ledger and stock_level remain the location-level source of truth
+ * for how much stock exists; bin_stock only tracks physical placement WITHIN
+ * a location. Invariant, enforced at putaway time under an advisory lock:
+ * for any (location, variant), sum(bin_stock.quantity) <= stock_level.on_hand.
+ * Bins may UNDER-cover (unputaway stock sits in an implicit "floor" area) but
+ * putaway can never OVER-cover on_hand.
  *
- * Completing a pick list does NOT move stock either: the existing fulfillment
+ * Completing a pick list does NOT move ledger stock: the existing fulfillment
  * flow (POST /v1/orders/:id/fulfill) consumes the order's active reservations
- * (reserved → sale) in the ledger. The pick list only certifies that the goods
- * physically left the shelves in the right amounts.
+ * (reserved → sale) in the ledger. The pick list certifies that the goods
+ * physically left the shelves — which is exactly why recordPicks also debits
+ * the bin_stock overlay.
  */
 export class WmsService {
   constructor(private readonly db: Db) {}
@@ -137,14 +161,209 @@ export class WmsService {
     });
   }
 
+  // ---- bin stock overlay ---------------------------------------------------
+
+  /**
+   * Record that `quantity` of a variant was physically placed into a bin.
+   * Coverage check: you can never bin more than the location's ledger on_hand
+   * minus what is already binned there — bins may under-cover on_hand (the
+   * remainder is unputaway "floor" stock) but never over-cover it.
+   *
+   * Race-safe: an advisory transaction lock on (tenant, location, variant)
+   * serializes concurrent putaways so two workers cannot both pass the
+   * coverage read and jointly overshoot on_hand.
+   */
+  async putaway(
+    tenantId: string,
+    userId: string,
+    input: { binId: string; variantId: string; quantity: number },
+  ): Promise<{ binId: string; variantId: string; binQuantity: number }> {
+    void userId; // attribution reserved for a later bin-audit trail
+    if (!Number.isFinite(input.quantity) || input.quantity <= 0) {
+      throw new WmsError("BAD_STATE", "quantity must be a positive number");
+    }
+    return this.db.withTenant(tenantId, async (c) => {
+      const bin = await c.query<{ location_id: string }>(
+        `SELECT z.location_id
+           FROM warehouse_bin b JOIN warehouse_zone z ON z.id = b.zone_id
+          WHERE b.id = $1`,
+        [input.binId],
+      );
+      if (!bin.rows[0]) throw new WmsError("BIN_NOT_FOUND", "bin not found");
+      const locationId = bin.rows[0].location_id;
+
+      // Serialize the coverage check per (tenant, location, variant); the lock
+      // is transaction-scoped and released automatically on commit/rollback.
+      await c.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2 || ':' || $3, 0))",
+        [tenantId, locationId, input.variantId],
+      );
+
+      const cov = await c.query<{ on_hand: string; binned: string }>(
+        `SELECT coalesce((SELECT sl.quantity FROM stock_level sl
+                           WHERE sl.location_id = $1 AND sl.variant_id = $2
+                             AND sl.state = 'on_hand'), 0) AS on_hand,
+                coalesce((SELECT sum(bs.quantity)
+                            FROM bin_stock bs
+                            JOIN warehouse_bin b ON b.id = bs.bin_id
+                            JOIN warehouse_zone z ON z.id = b.zone_id
+                           WHERE z.location_id = $1 AND bs.variant_id = $2), 0) AS binned`,
+        [locationId, input.variantId],
+      );
+      const onHand = Number(cov.rows[0]!.on_hand);
+      const binned = Number(cov.rows[0]!.binned);
+      if (input.quantity > onHand - binned) {
+        throw new WmsError(
+          "EXCEEDS_ON_HAND",
+          `cannot putaway ${input.quantity}: location on_hand ${onHand}, already binned ${binned}`,
+        );
+      }
+
+      const { rows } = await c.query<{ quantity: string }>(
+        `INSERT INTO bin_stock (tenant_id, bin_id, variant_id, quantity)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (tenant_id, bin_id, variant_id)
+         DO UPDATE SET quantity = bin_stock.quantity + EXCLUDED.quantity,
+                       updated_at = now()
+         RETURNING quantity`,
+        [tenantId, input.binId, input.variantId, input.quantity],
+      );
+      return {
+        binId: input.binId,
+        variantId: input.variantId,
+        binQuantity: Number(rows[0]!.quantity),
+      };
+    });
+  }
+
+  /**
+   * Move quantity between two bins. Bins may be in different zones but MUST
+   * belong to the same location — a cross-location move is a ledger transfer,
+   * not a bin shuffle. Debit-or-fail on the source (the conditional UPDATE is
+   * the race arbiter: no advisory lock needed since the location total is
+   * unchanged), then credit the destination.
+   */
+  async moveBin(
+    tenantId: string,
+    userId: string,
+    input: { fromBinId: string; toBinId: string; variantId: string; quantity: number },
+  ): Promise<{ moved: number }> {
+    void userId; // attribution reserved for a later bin-audit trail
+    if (!Number.isFinite(input.quantity) || input.quantity <= 0) {
+      throw new WmsError("BAD_STATE", "quantity must be a positive number");
+    }
+    return this.db.withTenant(tenantId, async (c) => {
+      const { rows: bins } = await c.query<{ id: string; location_id: string }>(
+        `SELECT b.id, z.location_id
+           FROM warehouse_bin b JOIN warehouse_zone z ON z.id = b.zone_id
+          WHERE b.id = ANY($1::uuid[])`,
+        [[input.fromBinId, input.toBinId]],
+      );
+      const from = bins.find((b) => b.id === input.fromBinId);
+      const to = bins.find((b) => b.id === input.toBinId);
+      if (!from) throw new WmsError("BIN_NOT_FOUND", "source bin not found");
+      if (!to) throw new WmsError("BIN_NOT_FOUND", "destination bin not found");
+      if (from.location_id !== to.location_id) {
+        throw new WmsError(
+          "CROSS_LOCATION",
+          "bins belong to different locations; use a stock transfer, not a bin move",
+        );
+      }
+      if (input.fromBinId === input.toBinId) return { moved: 0 };
+
+      const debit = await c.query(
+        `UPDATE bin_stock SET quantity = quantity - $4, updated_at = now()
+          WHERE tenant_id = $1 AND bin_id = $2 AND variant_id = $3 AND quantity >= $4`,
+        [tenantId, input.fromBinId, input.variantId, input.quantity],
+      );
+      if ((debit.rowCount ?? 0) === 0) {
+        throw new WmsError(
+          "INSUFFICIENT_BIN_QTY",
+          `source bin does not hold ${input.quantity} of the variant`,
+        );
+      }
+      await c.query(
+        `INSERT INTO bin_stock (tenant_id, bin_id, variant_id, quantity)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (tenant_id, bin_id, variant_id)
+         DO UPDATE SET quantity = bin_stock.quantity + EXCLUDED.quantity,
+                       updated_at = now()`,
+        [tenantId, input.toBinId, input.variantId, input.quantity],
+      );
+      return { moved: input.quantity };
+    });
+  }
+
+  /** What physically sits in a bin (bin_stock overlay), by SKU. */
+  async binContents(tenantId: string, binId: string): Promise<BinStockLine[]> {
+    return this.db.withTenant(tenantId, async (c) => {
+      const bin = await c.query("SELECT 1 FROM warehouse_bin WHERE id = $1", [binId]);
+      if (!bin.rows[0]) throw new WmsError("BIN_NOT_FOUND", "bin not found");
+      const { rows } = await c.query<{ variant_id: string; sku: string; quantity: string }>(
+        `SELECT bs.variant_id, v.sku, bs.quantity
+           FROM bin_stock bs JOIN variant v ON v.id = bs.variant_id
+          WHERE bs.bin_id = $1 AND bs.quantity > 0
+          ORDER BY v.sku`,
+        [binId],
+      );
+      return rows.map((r) => ({
+        variantId: r.variant_id,
+        sku: r.sku,
+        quantity: Number(r.quantity),
+      }));
+    });
+  }
+
+  /**
+   * Where a variant physically sits within a location: bins holding quantity
+   * (walking order) plus the unbinned remainder (ledger on_hand − binned) —
+   * stock that was received but never putaway, sitting on the implicit floor.
+   */
+  async variantPlacement(
+    tenantId: string,
+    locationId: string,
+    variantId: string,
+  ): Promise<VariantPlacement> {
+    return this.db.withTenant(tenantId, async (c) => {
+      const { rows: bins } = await c.query<{ bin_id: string; bin_path: string; quantity: string }>(
+        `SELECT bs.bin_id, z.code || '/' || b.code AS bin_path, bs.quantity
+           FROM bin_stock bs
+           JOIN warehouse_bin b ON b.id = bs.bin_id
+           JOIN warehouse_zone z ON z.id = b.zone_id
+          WHERE z.location_id = $1 AND bs.variant_id = $2 AND bs.quantity > 0
+          ORDER BY z.position, b.position, z.code, b.code`,
+        [locationId, variantId],
+      );
+      const { rows: level } = await c.query<{ quantity: string }>(
+        `SELECT quantity FROM stock_level
+          WHERE location_id = $1 AND variant_id = $2 AND state = 'on_hand'`,
+        [locationId, variantId],
+      );
+      const onHand = Number(level[0]?.quantity ?? 0);
+      const binned = bins.reduce((sum, b) => sum + Number(b.quantity), 0);
+      return {
+        onHand,
+        binned,
+        unbinned: onHand - binned,
+        bins: bins.map((b) => ({
+          binId: b.bin_id,
+          binPath: b.bin_path,
+          quantity: Number(b.quantity),
+        })),
+      };
+    });
+  }
+
   // ---- picking -------------------------------------------------------------
 
   /**
    * One pick list per reserved order. Lines mirror the order's variants and
-   * quantities; each line carries a precomputed "ZONE/BIN" suggestion — the
-   * first matching bin assignment in walking order (zone.position then
-   * bin.position). Variants with no assignment get a NULL bin_path and sort
-   * last: the picker handles the known walk first, then hunts the strays.
+   * quantities; each line carries a precomputed "ZONE/BIN" suggestion. Bins
+   * that actually HOLD quantity (bin_stock > 0) are preferred, in walking
+   * order (zone.position then bin.position); when nothing is binned we fall
+   * back to the directory assignment (bin_assignment) in the same order.
+   * Variants with neither get a NULL bin_path and sort last: the picker
+   * handles the known walk first, then hunts the strays.
    */
   async createPickList(
     tenantId: string,
@@ -192,12 +411,20 @@ export class WmsService {
                      FROM sales_order_line WHERE order_id = $3
                     GROUP BY variant_id) need
              LEFT JOIN LATERAL (
+               -- Prefer bins that actually HOLD quantity (bin_stock overlay),
+               -- then fall back to the directory assignment; walking order
+               -- within each tier.
                SELECT z.code || '/' || b.code AS bin_path
-                 FROM bin_assignment ba
-                 JOIN warehouse_bin b ON b.id = ba.bin_id
+                 FROM warehouse_bin b
                  JOIN warehouse_zone z ON z.id = b.zone_id
-                WHERE ba.variant_id = need.variant_id AND z.location_id = $4
-                ORDER BY z.position, b.position, z.code, b.code
+                 LEFT JOIN bin_stock bs
+                        ON bs.bin_id = b.id AND bs.variant_id = need.variant_id
+                       AND bs.quantity > 0
+                 LEFT JOIN bin_assignment ba
+                        ON ba.bin_id = b.id AND ba.variant_id = need.variant_id
+                WHERE z.location_id = $4
+                  AND (bs.bin_id IS NOT NULL OR ba.bin_id IS NOT NULL)
+                ORDER BY (bs.bin_id IS NULL), z.position, b.position, z.code, b.code
                 LIMIT 1
              ) bp ON true`,
           [pickListId, tenantId, orderId, head.location_id],
@@ -237,6 +464,18 @@ export class WmsService {
     });
   }
 
+  /**
+   * Record picked quantities. When a line has a bin_path suggestion, the pick
+   * also debits the bin_stock overlay for that bin.
+   *
+   * POLICY — physical reality wins: the picker took the goods off the shelf
+   * whether or not the overlay agrees. If the suggested bin holds less than
+   * the picked delta, we decrement what it has (clamped at zero) and treat
+   * the remainder as taken from unbinned floor stock — the pick is NEVER
+   * blocked and bin_stock NEVER goes negative. Downward corrections
+   * (re-recording a smaller picked_qty) do not auto-restock the bin either:
+   * goods going back on a shelf are an explicit putaway.
+   */
   async recordPicks(
     tenantId: string,
     userId: string,
@@ -244,22 +483,45 @@ export class WmsService {
     picks: { variantId: string; pickedQty: number }[],
   ): Promise<{ recorded: number }> {
     return this.db.withTenant(tenantId, async (c) => {
-      const head = await c.query<{ status: string }>(
-        "SELECT status FROM pick_list WHERE id = $1 FOR UPDATE",
+      const head = await c.query<{ status: string; location_id: string }>(
+        "SELECT status, location_id FROM pick_list WHERE id = $1 FOR UPDATE",
         [pickListId],
       );
       if (!head.rows[0]) throw new WmsError("PICK_NOT_FOUND", "pick list not found");
       if (head.rows[0].status !== "open") {
         throw new WmsError("BAD_STATE", `pick list is ${head.rows[0].status}`);
       }
+      const locationId = head.rows[0].location_id;
       let recorded = 0;
       for (const pick of picks) {
-        const res = await c.query(
-          `UPDATE pick_list_line SET picked_qty = $3, picked_by = $4
-            WHERE pick_list_id = $1 AND variant_id = $2`,
+        // Capture the previous picked_qty so re-records only debit the delta.
+        const res = await c.query<{ bin_path: string | null; old_qty: string | null }>(
+          `UPDATE pick_list_line l SET picked_qty = $3, picked_by = $4
+             FROM (SELECT picked_qty AS old_qty FROM pick_list_line
+                    WHERE pick_list_id = $1 AND variant_id = $2 FOR UPDATE) prev
+            WHERE l.pick_list_id = $1 AND l.variant_id = $2
+            RETURNING l.bin_path, prev.old_qty`,
           [pickListId, pick.variantId, pick.pickedQty, userId],
         );
-        recorded += res.rowCount ?? 0;
+        const line = res.rows[0];
+        if (!line) continue;
+        recorded += 1;
+
+        const delta = pick.pickedQty - Number(line.old_qty ?? 0);
+        if (line.bin_path !== null && delta > 0) {
+          // Resolve the line's suggested bin by its "ZONE/BIN" path at the
+          // pick list's location and debit what it has (never below zero).
+          await c.query(
+            `UPDATE bin_stock bs
+                SET quantity = greatest(bs.quantity - $4, 0), updated_at = now()
+               FROM warehouse_bin b JOIN warehouse_zone z ON z.id = b.zone_id
+              WHERE bs.bin_id = b.id
+                AND z.location_id = $1
+                AND z.code || '/' || b.code = $2
+                AND bs.variant_id = $3`,
+            [locationId, line.bin_path, pick.variantId, delta],
+          );
+        }
       }
       return { recorded };
     });

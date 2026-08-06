@@ -1,4 +1,9 @@
-/** Checkout form validation: name required, at least one of email/phone. */
+/**
+ * Checkout form validation: name required, at least one of email/phone.
+ * Errors are i18n message keys — the page renders them via t(lang, key) so
+ * validation copy follows the shopper's language.
+ */
+import type { MessageKey } from "./i18n.js";
 
 export interface CheckoutInput {
   name: string;
@@ -7,10 +12,10 @@ export interface CheckoutInput {
 }
 
 export interface CheckoutErrors {
-  name?: string;
-  contact?: string;
-  email?: string;
-  phone?: string;
+  name?: MessageKey;
+  contact?: MessageKey;
+  email?: MessageKey;
+  phone?: MessageKey;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -23,15 +28,15 @@ export function validateCheckout(input: CheckoutInput): CheckoutErrors {
   const email = input.email.trim();
   const phone = input.phone.trim();
 
-  if (name.length === 0) errors.name = "Your name is required.";
+  if (name.length === 0) errors.name = "checkout.error.nameRequired";
   if (email.length === 0 && phone.length === 0) {
-    errors.contact = "Provide an email address or a phone number so we can reach you.";
+    errors.contact = "checkout.error.contactRequired";
   }
   if (email.length > 0 && !EMAIL_RE.test(email)) {
-    errors.email = "That email address doesn't look right.";
+    errors.email = "checkout.error.email";
   }
   if (phone.length > 0 && !PHONE_RE.test(phone)) {
-    errors.phone = "That phone number doesn't look right.";
+    errors.phone = "checkout.error.phone";
   }
   return errors;
 }

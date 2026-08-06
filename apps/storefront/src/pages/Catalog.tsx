@@ -2,7 +2,9 @@ import { useMemo, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import type { StoreContext } from "../App.js";
 import type { CatalogItem } from "../lib/api.js";
+import { t } from "../lib/i18n.js";
 import { formatMinor } from "../lib/money.js";
+import { useLang } from "../lib/useLang.js";
 
 function fromPriceMinor(item: CatalogItem): number | null {
   if (item.variants.length === 0) return null;
@@ -15,6 +17,7 @@ function inStock(item: CatalogItem): boolean {
 
 export function CatalogPage() {
   const { slug, catalog } = useOutletContext<StoreContext>();
+  const { lang } = useLang();
   const [query, setQuery] = useState("");
 
   const items = useMemo(() => {
@@ -34,12 +37,12 @@ export function CatalogPage() {
         <h1>{catalog.tenant.name}</h1>
         <div className="search-box">
           <label htmlFor="catalog-search" className="visually-hidden">
-            Search products
+            {t(lang, "catalog.searchLabel")}
           </label>
           <input
             id="catalog-search"
             type="search"
-            placeholder="Search products…"
+            placeholder={t(lang, "catalog.searchPlaceholder")}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -48,13 +51,13 @@ export function CatalogPage() {
 
       {catalog.items.length === 0 && (
         <section className="empty-state">
-          <p>This store hasn't published any products yet. Check back soon.</p>
+          <p>{t(lang, "catalog.empty")}</p>
         </section>
       )}
 
       {catalog.items.length > 0 && items.length === 0 && (
         <section className="empty-state">
-          <p>No products match “{query.trim()}”.</p>
+          <p>{t(lang, "catalog.noMatches", { query: query.trim() })}</p>
         </section>
       )}
 
@@ -75,13 +78,15 @@ export function CatalogPage() {
                   <span className="price">
                     {price === null ? "—" : (
                       <>
-                        {item.variants.length > 1 && <span className="price-from">From </span>}
+                        {item.variants.length > 1 && (
+                          <span className="price-from">{t(lang, "catalog.from")} </span>
+                        )}
                         {formatMinor(price, currency)}
                       </>
                     )}
                   </span>
                   <span className={available ? "badge badge-in" : "badge badge-out"}>
-                    {available ? "In stock" : "Out of stock"}
+                    {available ? t(lang, "catalog.inStock") : t(lang, "catalog.outOfStock")}
                   </span>
                 </div>
               </Link>

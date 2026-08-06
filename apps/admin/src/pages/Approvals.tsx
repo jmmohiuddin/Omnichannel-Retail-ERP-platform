@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { decideApproval, listApprovals } from "../lib/api.js";
 import { approvalAge, approvalKindTone, summarizeApprovalPayload } from "../lib/approvals.js";
-import { formatDubaiTime, humanState, shortId } from "../lib/movements.js";
+import { formatDubaiTime, shortId } from "../lib/movements.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useT } from "../lib/useT.js";
 
 export function ApprovalsPage() {
+  const { t, tEnum, lang } = useT();
   const { data: items, error, loading, reload } = useAsync(listApprovals, []);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
@@ -22,7 +24,7 @@ export function ApprovalsPage() {
     } catch (err) {
       // 403 SELF_APPROVAL / FORBIDDEN_ROLE: the ApiError message carries the
       // server's explanation — surface it inline on the row.
-      const message = err instanceof Error ? err.message : "Decision failed";
+      const message = err instanceof Error ? err.message : t("approvals.decisionFailed");
       setRowErrors((prev) => ({ ...prev, [id]: message }));
     } finally {
       setBusyId(null);
@@ -32,30 +34,30 @@ export function ApprovalsPage() {
   return (
     <>
       <div className="page-head">
-        <h1>Approvals</h1>
+        <h1>{t("nav.approvals")}</h1>
         <span className="subtle">
-          {items ? `${items.length} pending` : ""} · times in Asia/Dubai
+          {items ? t("approvals.countPending", { count: items.length }) : ""}
         </span>
       </div>
 
-      {error && <div className="error-banner">Failed to load approvals: {error}</div>}
+      {error && <div className="error-banner">{t("approvals.loadFailed", { error })}</div>}
 
       <section className="card">
         {loading ? (
-          <p className="empty">Loading approvals…</p>
+          <p className="empty">{t("approvals.loading")}</p>
         ) : !items || items.length === 0 ? (
-          <p className="empty">Nothing waiting for approval.</p>
+          <p className="empty">{t("approvals.empty")}</p>
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Kind</th>
-                  <th>Summary</th>
-                  <th>Reason</th>
-                  <th>Requested by</th>
-                  <th>Age</th>
-                  <th aria-label="Actions" />
+                  <th>{t("th.kind")}</th>
+                  <th>{t("th.summary")}</th>
+                  <th>{t("th.reason")}</th>
+                  <th>{t("th.requestedBy")}</th>
+                  <th>{t("th.age")}</th>
+                  <th aria-label={t("common.actions")} />
                 </tr>
               </thead>
               <tbody>
@@ -63,16 +65,19 @@ export function ApprovalsPage() {
                   <tr key={a.id}>
                     <td>
                       <span className={`badge ${approvalKindTone(a.kind)}`}>
-                        {humanState(a.kind)}
+                        {tEnum("kind", a.kind)}
                       </span>
                     </td>
-                    <td>{summarizeApprovalPayload(a.kind, a.payload)}</td>
+                    <td>{summarizeApprovalPayload(a.kind, a.payload, lang)}</td>
                     <td>{a.reason || <span className="faint">—</span>}</td>
                     <td className="mono" title={a.requestedBy}>
                       {shortId(a.requestedBy)}
                     </td>
-                    <td title={formatDubaiTime(a.requested_at)} style={{ whiteSpace: "nowrap" }}>
-                      {approvalAge(a.requested_at)}
+                    <td
+                      title={formatDubaiTime(a.requested_at, lang)}
+                      style={{ whiteSpace: "nowrap" }}
+                    >
+                      {approvalAge(a.requested_at, Date.now(), lang)}
                     </td>
                     <td>
                       <div className="actions">
@@ -81,7 +86,7 @@ export function ApprovalsPage() {
                           disabled={busyId === a.id}
                           onClick={() => void decide(a.id, true)}
                         >
-                          Approve
+                          {t("approvals.approve")}
                         </button>
                         <button
                           type="button"
@@ -89,7 +94,7 @@ export function ApprovalsPage() {
                           disabled={busyId === a.id}
                           onClick={() => void decide(a.id, false)}
                         >
-                          Reject
+                          {t("approvals.reject")}
                         </button>
                       </div>
                       {rowErrors[a.id] && <span className="row-error">{rowErrors[a.id]}</span>}

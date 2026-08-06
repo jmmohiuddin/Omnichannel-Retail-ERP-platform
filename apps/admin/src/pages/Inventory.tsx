@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { listLevels, listLocations, type LevelDto } from "../lib/api.js";
-import { formatQuantity, humanState } from "../lib/movements.js";
+import { formatQuantity } from "../lib/movements.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useT } from "../lib/useT.js";
 
 const STATE_ORDER = ["on_hand", "reserved", "in_transit", "damaged", "returned_pending"];
 
@@ -16,6 +17,7 @@ function groupByState(levels: LevelDto[]): Map<string, LevelDto[]> {
 }
 
 export function InventoryPage() {
+  const { t, tEnum } = useT();
   const { data: locations, error: locError, loading: locLoading } = useAsync(listLocations, []);
   const [locationId, setLocationId] = useState<string>("");
 
@@ -33,16 +35,17 @@ export function InventoryPage() {
     [locationId],
   );
 
-  if (locLoading) return <p className="empty">Loading locations…</p>;
-  if (locError) return <div className="error-banner">Failed to load locations: {locError}</div>;
+  if (locLoading) return <p className="empty">{t("inventory.loadingLocations")}</p>;
+  if (locError)
+    return <div className="error-banner">{t("inventory.locationsFailed", { error: locError })}</div>;
 
   if (!locations || locations.length === 0) {
     return (
       <>
         <div className="page-head">
-          <h1>Inventory</h1>
+          <h1>{t("nav.inventory")}</h1>
         </div>
-        <p className="empty">No locations yet — create a store or warehouse first.</p>
+        <p className="empty">{t("inventory.noLocations")}</p>
       </>
     );
   }
@@ -52,12 +55,12 @@ export function InventoryPage() {
   return (
     <>
       <div className="page-head">
-        <h1>Inventory</h1>
+        <h1>{t("nav.inventory")}</h1>
       </div>
 
       <div className="toolbar">
         <div className="field">
-          <label htmlFor="inv-location">Location</label>
+          <label htmlFor="inv-location">{t("inventory.location")}</label>
           <select
             id="inv-location"
             value={locationId}
@@ -65,37 +68,43 @@ export function InventoryPage() {
           >
             {locations.map((l) => (
               <option key={l.id} value={l.id}>
-                {l.name} ({l.code}) — {l.kind}
+                {l.name} ({l.code}) — {tEnum("lockind", l.kind)}
               </option>
             ))}
           </select>
         </div>
       </div>
 
-      {lvlError && <div className="error-banner">Failed to load stock levels: {lvlError}</div>}
+      {lvlError && (
+        <div className="error-banner">{t("inventory.levelsFailed", { error: lvlError })}</div>
+      )}
       {lvlLoading ? (
-        <p className="empty">Loading stock levels…</p>
+        <p className="empty">{t("inventory.loadingLevels")}</p>
       ) : !levels || levels.length === 0 ? (
-        <p className="empty">No stock at this location.</p>
+        <p className="empty">{t("inventory.noStock")}</p>
       ) : (
         <section className="card">
           {[...groups.entries()].map(([state, rows]) => (
             <div key={state}>
               <div className="group-title">
-                {humanState(state)}{" "}
+                {tEnum("state", state)}{" "}
                 <span className="faint">
-                  ({rows.length} SKU{rows.length === 1 ? "" : "s"})
+                  (
+                  {rows.length === 1
+                    ? t("inventory.skuOne")
+                    : t("inventory.skuMany", { count: rows.length })}
+                  )
                 </span>
               </div>
               <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>SKU</th>
-                      <th>Product</th>
-                      <th>State</th>
-                      <th className="num">Quantity</th>
-                      <th aria-label="Actions" />
+                      <th>{t("th.sku")}</th>
+                      <th>{t("th.product")}</th>
+                      <th>{t("th.state")}</th>
+                      <th className="num">{t("th.quantity")}</th>
+                      <th aria-label={t("common.actions")} />
                     </tr>
                   </thead>
                   <tbody>
@@ -104,12 +113,12 @@ export function InventoryPage() {
                         <td className="mono">{lvl.sku}</td>
                         <td>{lvl.productName}</td>
                         <td>
-                          <span className="badge neutral">{humanState(lvl.state)}</span>
+                          <span className="badge neutral">{tEnum("state", lvl.state)}</span>
                         </td>
                         <td className="num">{formatQuantity(lvl.quantity)}</td>
                         <td>
                           <Link to={`/inventory/${lvl.variantId}?locationId=${locationId}`}>
-                            Detail
+                            {t("inventory.detail")}
                           </Link>
                         </td>
                       </tr>

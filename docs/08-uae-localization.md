@@ -32,13 +32,26 @@ is the authority for market-specific behavior; generic docs defer to it.
   2026–2027) is on the roadmap — invoice records already carry structured, per-line tax
   data so the reporting layer can be added without schema surgery.
 
-## 3. Language & UI
+## 3. Language & UI — **implemented**
 
-- **Bilingual English/Arabic** across admin, POS, storefront, and receipts; full **RTL**
-  support is a design-system requirement (logical CSS properties, direction-aware icons),
-  not a retrofit. Receipts print EN/AR dual-language (standard practice in Dubai retail).
+- **Bilingual English/Arabic** shipped across admin, POS, storefront, and the mobile
+  companion. Each app carries a hand-rolled typed dictionary (`src/lib/i18n.ts`):
+  `en` is declared `as const`, which derives the `MessageKey` union, and
+  `ar: Record<MessageKey, string>` makes a missing or stray Arabic key a **compile
+  error** — no runtime "missing translation" class of bug exists. Dictionary parity
+  is additionally asserted by tests in both directions, with checks that Arabic values
+  are actually translated rather than copied English.
+- **RTL** switches `<html lang dir>`; layout mirroring is free because every stylesheet
+  has used logical CSS properties (`margin-inline`, `padding-block`, `inset-inline`)
+  since the first commit — this was designed in, not retrofitted. React Native has no
+  DOM, so the mobile app exposes `isRtl(lang)` for screen-level flips; full native RTL
+  via `I18nManager.forceRTL` requires an app reload and is the documented native step.
+- **Numerals stay Western** in money and scan fields (`dir="ltr"` + `unicode-bidi:
+  isolate` on amounts) — matching UAE retail convention and keeping barcodes/IMEIs
+  unambiguous. Dates localize to `ar-AE` when Arabic is active.
 - Product catalog: name/description fields localizable (`jsonb` i18n map on
-  product/category SEO + content fields).
+  product/category SEO + content fields) — per-tenant content translation is the
+  next step beyond UI chrome.
 
 ## 4. Payments (tokenized — ERP stays out of PCI scope)
 

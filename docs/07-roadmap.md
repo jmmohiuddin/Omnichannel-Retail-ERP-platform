@@ -26,9 +26,18 @@ Phases are cumulative; each ends with a releasable increment, updated docs, and 
 > installed via rustup on the dev machine). Hardware plugins (ESC/POS
 > printer, cash drawer, SQLite offline store) attach to the Rust side next.
 >
+> **Phases 8–12 additions:** TOTP MFA + hash-chained audit trail + channel
+> management; purchasing (supplier → PO → receive) with unit provenance;
+> server-owned POS pricing with cashier discount bands and manager discount
+> approvals; warranty stamping and the repair lifecycle with per-unit history;
+> gift cards; promo and wholesale price-list resolution; categories, images
+> and SEO; **per-bin WMS quantities** (placement overlay on the ledger, with
+> putaway coverage checks and stock-aware pick routing); and **English/Arabic
+> RTL internationalization** across the frontends (see 08-uae-localization §3).
+>
 > **Still requires external accounts to activate:** real gateway + courier +
 > marketplace credentials, e-invoice transmission via an accredited provider,
-> app-store builds of the mobile app, per-bin stock quantities (WMS v2).
+> app-store builds of the mobile app.
 
 ## Phase 0 — Foundations (this repo state)
 Architecture + ADRs, PRD, integration & security design, core database schema,

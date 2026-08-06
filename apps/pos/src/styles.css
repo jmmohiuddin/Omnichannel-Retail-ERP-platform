@@ -62,6 +62,19 @@ body {
 .mono {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
+  /*
+   * Money, SKUs, IMEIs and order numbers are Western-numeral codes (UAE
+   * retail convention — see lib/money.ts). Isolate them as LTR runs so the
+   * bidi algorithm never reorders "AED 12.50" inside Arabic text.
+   */
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Compact EN/عربي toggle row at the top of centered panels. */
+.panel-lang-row {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .muted {

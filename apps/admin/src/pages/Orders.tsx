@@ -7,7 +7,7 @@ import {
   type OrderDto,
 } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
-import { formatDubaiTime, formatQuantity, humanState } from "../lib/movements.js";
+import { formatDubaiTime, formatQuantity } from "../lib/movements.js";
 import {
   ORDER_STATUS_FILTERS,
   buildOrdersQuery,
@@ -18,8 +18,10 @@ import {
   type OrderStatusFilter,
 } from "../lib/orders.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useT } from "../lib/useT.js";
 
 function ReceiptModal({ order, onClose }: { order: OrderDto; onClose: () => void }) {
+  const { t, tEnum, lang } = useT();
   const { data: receipt, error, loading } = useAsync(() => getOrderReceipt(order.id), [order.id]);
   const currency = receipt?.currency ?? order.currency;
 
@@ -29,33 +31,35 @@ function ReceiptModal({ order, onClose }: { order: OrderDto; onClose: () => void
         className="modal card"
         role="dialog"
         aria-modal="true"
-        aria-label={`Tax invoice ${order.orderNo}`}
+        aria-label={`${t("receipt.title")} ${order.orderNo}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="page-head">
-          <h2 style={{ marginBlockEnd: 0 }}>Tax invoice · {receipt?.orderNo ?? order.orderNo}</h2>
+          <h2 style={{ marginBlockEnd: 0 }}>
+            {t("receipt.title")} · {receipt?.orderNo ?? order.orderNo}
+          </h2>
           <button type="button" className="secondary" onClick={onClose}>
-            Close
+            {t("common.close")}
           </button>
         </div>
 
-        {loading && <p className="empty">Loading receipt…</p>}
-        {error && <div className="error-banner">Failed to load receipt: {error}</div>}
+        {loading && <p className="empty">{t("receipt.loading")}</p>}
+        {error && <div className="error-banner">{t("receipt.loadFailed", { error })}</div>}
 
         {receipt && (
           <>
             <div className="kv-grid" style={{ marginBlockEnd: "var(--space-4)" }}>
               <div>
                 <div className="group-title" style={{ marginBlock: 0 }}>
-                  TRN
+                  {t("receipt.trn")}
                 </div>
                 <span className="mono">{receipt.trn ?? "—"}</span>
               </div>
               <div>
                 <div className="group-title" style={{ marginBlock: 0 }}>
-                  Issued
+                  {t("receipt.issued")}
                 </div>
-                {receipt.issuedAt ? formatDubaiTime(receipt.issuedAt) : "—"}
+                {receipt.issuedAt ? formatDubaiTime(receipt.issuedAt, lang) : "—"}
               </div>
             </div>
 
@@ -64,11 +68,11 @@ function ReceiptModal({ order, onClose }: { order: OrderDto; onClose: () => void
                 <table>
                   <thead>
                     <tr>
-                      <th>Item</th>
-                      <th className="num">Qty</th>
-                      <th className="num">Unit</th>
-                      <th className="num">VAT</th>
-                      <th className="num">Total</th>
+                      <th>{t("th.item")}</th>
+                      <th className="num">{t("th.qty")}</th>
+                      <th className="num">{t("th.unit")}</th>
+                      <th className="num">{t("th.vat")}</th>
+                      <th className="num">{t("th.total")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -106,7 +110,7 @@ function ReceiptModal({ order, onClose }: { order: OrderDto; onClose: () => void
                     {receipt.subtotalMinor !== undefined && (
                       <tr>
                         <td colSpan={4} className="num subtle">
-                          Subtotal
+                          {t("receipt.subtotal")}
                         </td>
                         <td className="num">{formatMinor(receipt.subtotalMinor, currency)}</td>
                       </tr>
@@ -114,7 +118,7 @@ function ReceiptModal({ order, onClose }: { order: OrderDto; onClose: () => void
                     {receipt.vatMinor !== undefined && (
                       <tr>
                         <td colSpan={4} className="num subtle">
-                          VAT (5%)
+                          {t("receipt.vat5")}
                         </td>
                         <td className="num">{formatMinor(receipt.vatMinor, currency)}</td>
                       </tr>
@@ -122,7 +126,7 @@ function ReceiptModal({ order, onClose }: { order: OrderDto; onClose: () => void
                     {receipt.totalMinor !== undefined && (
                       <tr>
                         <td colSpan={4} className="num" style={{ fontWeight: 650 }}>
-                          Total
+                          {t("receipt.total")}
                         </td>
                         <td className="num" style={{ fontWeight: 650 }}>
                           {formatMinor(receipt.totalMinor, currency)}
@@ -136,13 +140,13 @@ function ReceiptModal({ order, onClose }: { order: OrderDto; onClose: () => void
 
             {receipt.payments && receipt.payments.length > 0 && (
               <>
-                <div className="group-title">Payments</div>
+                <div className="group-title">{t("receipt.payments")}</div>
                 <div className="table-wrap">
                   <table>
                     <tbody>
                       {receipt.payments.map((p, i) => (
                         <tr key={i}>
-                          <td>{p.method ? humanState(p.method) : "—"}</td>
+                          <td>{p.method ? tEnum("pay", p.method) : "—"}</td>
                           <td className="num">
                             {p.amountMinor !== undefined
                               ? formatMinor(p.amountMinor, currency)
@@ -157,7 +161,7 @@ function ReceiptModal({ order, onClose }: { order: OrderDto; onClose: () => void
             )}
 
             <details style={{ marginBlockStart: "var(--space-3)" }}>
-              <summary className="faint">Raw receipt JSON</summary>
+              <summary className="faint">{t("receipt.rawJson")}</summary>
               <pre className="mono raw-json">{JSON.stringify(receipt, null, 2)}</pre>
             </details>
           </>
@@ -168,6 +172,7 @@ function ReceiptModal({ order, onClose }: { order: OrderDto; onClose: () => void
 }
 
 export function OrdersPage() {
+  const { t, tEnum, lang } = useT();
   const [filter, setFilter] = useState<OrderStatusFilter>("all");
   const {
     data: orders,
@@ -201,34 +206,36 @@ export function OrdersPage() {
   }
 
   function onFulfill(order: OrderDto) {
-    void run(order.id, () => fulfillOrder(order.id), fulfillErrorMessage);
+    void run(order.id, () => fulfillOrder(order.id), (err) => fulfillErrorMessage(err, lang));
   }
 
   function onCancel(order: OrderDto) {
-    const reason = window.prompt(`Reason for cancelling ${order.orderNo}?`);
+    const reason = window.prompt(t("orders.cancelPrompt", { orderNo: order.orderNo }));
     if (reason === null) return;
     const trimmed = reason.trim();
     if (!trimmed) {
-      setRowErrors((prev) => ({ ...prev, [order.id]: "A cancellation reason is required." }));
+      setRowErrors((prev) => ({ ...prev, [order.id]: t("orders.cancelReasonRequired") }));
       return;
     }
     void run(
       order.id,
       () => cancelOrder(order.id, trimmed),
-      (err) => (err instanceof Error ? err.message : "Cancel failed"),
+      (err) => (err instanceof Error ? err.message : t("orders.cancelFailed")),
     );
   }
+
+  const statusLabel = (status: string) => tEnum("status", status);
 
   return (
     <>
       <div className="page-head">
-        <h1>Orders</h1>
+        <h1>{t("nav.orders")}</h1>
         <span className="subtle">
-          {orders ? `${orders.length} orders` : ""} · times in Asia/Dubai
+          {orders ? t("orders.countSummary", { count: orders.length }) : ""}
         </span>
       </div>
 
-      <div className="tabs" role="tablist" aria-label="Order status filter">
+      <div className="tabs" role="tablist" aria-label={t("orders.filterLabel")}>
         {ORDER_STATUS_FILTERS.map((f) => (
           <button
             key={f}
@@ -238,32 +245,36 @@ export function OrdersPage() {
             className={filter === f ? "active" : ""}
             onClick={() => setFilter(f)}
           >
-            {f === "all" ? "All" : humanState(f)}
+            {f === "all" ? t("orders.all") : statusLabel(f)}
           </button>
         ))}
       </div>
 
-      {error && <div className="error-banner">Failed to load orders: {error}</div>}
+      {error && <div className="error-banner">{t("orders.loadFailed", { error })}</div>}
 
       <section className="card">
         {loading ? (
-          <p className="empty">Loading orders…</p>
+          <p className="empty">{t("orders.loading")}</p>
         ) : !orders || orders.length === 0 ? (
           <p className="empty">
-            No {filter === "all" ? "" : `${humanState(filter).toLowerCase()} `}orders.
+            {filter === "all"
+              ? t("orders.none")
+              : t("orders.noneFiltered", {
+                  status: lang === "en" ? statusLabel(filter).toLowerCase() : statusLabel(filter),
+                })}
           </p>
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Order</th>
-                  <th>Status</th>
-                  <th>Channel</th>
-                  <th>Customer</th>
-                  <th className="num">Total</th>
-                  <th>Placed (Dubai)</th>
-                  <th aria-label="Actions" />
+                  <th>{t("th.order")}</th>
+                  <th>{t("th.status")}</th>
+                  <th>{t("th.channel")}</th>
+                  <th>{t("th.customer")}</th>
+                  <th className="num">{t("th.total")}</th>
+                  <th>{t("th.placedDubai")}</th>
+                  <th aria-label={t("common.actions")} />
                 </tr>
               </thead>
               <tbody>
@@ -272,13 +283,13 @@ export function OrdersPage() {
                     <td className="mono">{o.orderNo}</td>
                     <td>
                       <span className={`badge ${orderStatusTone(o.status)}`}>
-                        {humanState(o.status)}
+                        {statusLabel(o.status)}
                       </span>
                     </td>
-                    <td>{humanState(o.channelKind)}</td>
-                    <td>{o.customerName ?? <span className="faint">Walk-in</span>}</td>
+                    <td>{tEnum("channel", o.channelKind)}</td>
+                    <td>{o.customerName ?? <span className="faint">{t("orders.walkIn")}</span>}</td>
                     <td className="num">{formatMinor(o.totalMinor, o.currency)}</td>
-                    <td style={{ whiteSpace: "nowrap" }}>{formatDubaiTime(o.placedAt)}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>{formatDubaiTime(o.placedAt, lang)}</td>
                     <td>
                       <div className="actions">
                         {canFulfill(o.status) && (
@@ -287,7 +298,7 @@ export function OrdersPage() {
                             disabled={busyId === o.id}
                             onClick={() => onFulfill(o)}
                           >
-                            Fulfill
+                            {t("orders.fulfill")}
                           </button>
                         )}
                         {canCancel(o.status) && (
@@ -297,11 +308,11 @@ export function OrdersPage() {
                             disabled={busyId === o.id}
                             onClick={() => onCancel(o)}
                           >
-                            Cancel
+                            {t("orders.cancel")}
                           </button>
                         )}
                         <button type="button" className="link" onClick={() => setReceiptFor(o)}>
-                          Receipt
+                          {t("orders.receipt")}
                         </button>
                       </div>
                       {rowErrors[o.id] && <span className="row-error">{rowErrors[o.id]}</span>}

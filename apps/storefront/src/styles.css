@@ -156,6 +156,31 @@ body {
   font-weight: 700;
 }
 
+/* EN/عربي language switch in the store header. */
+.lang-toggle {
+  appearance: none;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding-block: var(--space-1);
+  padding-inline: var(--space-3);
+  cursor: pointer;
+}
+
+.lang-toggle:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+
+.lang-toggle:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
 .store-page {
   flex: 1;
   inline-size: 100%;

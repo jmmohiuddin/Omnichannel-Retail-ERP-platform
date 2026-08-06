@@ -2,7 +2,9 @@ import { useState } from "react";
 import { Link, useLocation, useOutletContext, useParams } from "react-router-dom";
 import type { StoreContext } from "../App.js";
 import { ApiError, startPayment, type OrderResult } from "../lib/api.js";
+import { t, type MessageKey } from "../lib/i18n.js";
 import { formatMinor } from "../lib/money.js";
+import { useLang } from "../lib/useLang.js";
 
 function isOrderResult(value: unknown): value is OrderResult {
   if (typeof value !== "object" || value === null) return false;
@@ -13,17 +15,19 @@ function isOrderResult(value: unknown): value is OrderResult {
 export function ConfirmationPage() {
   const { slug } = useOutletContext<StoreContext>();
   const { orderNo = "" } = useParams();
+  const { lang } = useLang();
   const location = useLocation();
   const state = location.state as { result?: unknown } | null;
   const result = state && isOrderResult(state.result) ? state.result : null;
 
   const [paying, setPaying] = useState(false);
-  const [payError, setPayError] = useState<string | null>(null);
+  // Message key (not prose) so it re-renders in the active language.
+  const [payErrorKey, setPayErrorKey] = useState<MessageKey | null>(null);
 
   const payNow = async () => {
     if (!result) return;
     setPaying(true);
-    setPayError(null);
+    setPayErrorKey(null);
     try {
       const intent = await startPayment(slug, result.orderId);
       if (intent.redirectUrl) {
@@ -31,14 +35,14 @@ export function ConfirmationPage() {
         window.location.assign(intent.redirectUrl);
         return;
       }
-      setPayError("Payment started — follow the instructions sent to you.");
+      setPayErrorKey("confirm.payStarted");
     } catch (err) {
       if (err instanceof ApiError && err.code === "INTENT_EXISTS") {
-        setPayError("Payment for this order has already been started.");
+        setPayErrorKey("confirm.payAlreadyStarted");
       } else if (err instanceof ApiError && err.code === "BAD_STATE") {
-        setPayError("This order can no longer be paid online — it may already be paid.");
+        setPayErrorKey("confirm.payBadState");
       } else {
-        setPayError("Could not start payment. Please try again.");
+        setPayErrorKey("confirm.payFailed");
       }
     } finally {
       setPaying(false);
@@ -47,23 +51,23 @@ export function ConfirmationPage() {
 
   return (
     <section className="confirmation">
-      <h1>Thank you — order received</h1>
+      <h1>{t(lang, "confirm.title")}</h1>
       <p className="order-no">
-        Order number <strong>{result?.orderNo ?? orderNo}</strong>
+        {t(lang, "confirm.orderNumber")} <strong>{result?.orderNo ?? orderNo}</strong>
       </p>
 
       {result && (
         <div className="cart-summary">
           <div className="summary-row">
-            <span>Subtotal (excl. VAT)</span>
+            <span>{t(lang, "confirm.subtotalExVat")}</span>
             <span>{formatMinor(result.totals.netMinor, result.totals.currency)}</span>
           </div>
           <div className="summary-row">
-            <span>VAT (5%)</span>
+            <span>{t(lang, "confirm.vat")}</span>
             <span>{formatMinor(result.totals.taxMinor, result.totals.currency)}</span>
           </div>
           <div className="summary-row total">
-            <span>Total</span>
+            <span>{t(lang, "confirm.total")}</span>
             <span>{formatMinor(result.totals.totalMinor, result.totals.currency)}</span>
           </div>
         </div>
@@ -71,27 +75,26 @@ export function ConfirmationPage() {
 
       <div className="alert info" role="status">
         <p>
-          <strong>Payment pending.</strong> Your order is reserved. Pay now to confirm it —
-          you'll be taken to a secure payment page.
+          <strong>{t(lang, "confirm.pendingTitle")}</strong> {t(lang, "confirm.pendingBody")}
         </p>
       </div>
 
       {result && (
         <p>
           <button type="button" onClick={payNow} disabled={paying}>
-            {paying ? "Starting payment…" : "Pay now"}
+            {paying ? t(lang, "confirm.startingPayment") : t(lang, "confirm.payNow")}
           </button>
         </p>
       )}
-      {payError && (
+      {payErrorKey && (
         <div className="alert" role="alert">
-          <p>{payError}</p>
+          <p>{t(lang, payErrorKey)}</p>
         </div>
       )}
 
       <p>
         <Link to={`/${slug}`} className="secondary button-like">
-          Back to the shop
+          {t(lang, "product.backToShop")}
         </Link>
       </p>
     </section>

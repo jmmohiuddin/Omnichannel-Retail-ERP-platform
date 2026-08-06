@@ -31,3 +31,21 @@ describe("isImeiToken / classifyScanToken — scan-input routing", () => {
     expect(classifyScanToken(`${VALID_IMEI} `)).toBe("product"); // caller trims first
   });
 });
+
+describe("scan-input digit handling is language-independent", () => {
+  // Scanners emit Western (ASCII) digits regardless of the UI language; the
+  // Arabic UI must not remap or reinterpret them (lib/i18n.ts file header).
+  it("Western-digit IMEIs and barcodes route identically with the Arabic UI active", async () => {
+    const { applyLangToDocument } = await import("./langStore.js");
+    applyLangToDocument("ar"); // no-op in node, but exercises the code path
+    expect(isImeiToken(VALID_IMEI)).toBe(true);
+    expect(classifyScanToken(VALID_IMEI)).toBe("stock-unit");
+    expect(classifyScanToken("6291041500213")).toBe("product");
+  });
+
+  it("Eastern Arabic digit strings are never IMEI tokens (no digit conversion)", () => {
+    const easternDigits = "٤٩٠١٥٤٢٠٣٢٣٧٥١٨"; // ٠-٩ rendering of the valid IMEI
+    expect(isImeiToken(easternDigits)).toBe(false);
+    expect(classifyScanToken(easternDigits)).toBe("product");
+  });
+});

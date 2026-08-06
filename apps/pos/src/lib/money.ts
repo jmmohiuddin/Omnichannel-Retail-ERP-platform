@@ -1,6 +1,11 @@
 /**
  * AED money formatting from minor units (fils). Money is always integer minor
  * units end to end (CLAUDE.md); division by 100 happens only at display time.
+ *
+ * The formatter is deliberately pinned to `en-AE` for BOTH the English and
+ * Arabic UIs: UAE retail convention is Western (Latin) numerals on price
+ * tags, receipts and card terminals, so amounts must not switch to Eastern
+ * Arabic digits when the interface language is Arabic (see lib/i18n.ts).
  */
 
 const formatters = new Map<string, Intl.NumberFormat>();

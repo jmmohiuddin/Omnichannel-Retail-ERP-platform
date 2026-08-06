@@ -4,8 +4,10 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../lib/navigation";
 import { apiClient } from "../lib/services";
 import type { AvailabilityDto, LocationDto } from "../lib/api";
+import { isRtl, t } from "../lib/i18n";
 import { stockSearchResults, type StockSearchRow } from "../lib/viewmodels";
 import { colors, common } from "./theme";
+import { useLang } from "./useLang";
 
 type Props = NativeStackScreenProps<RootStackParamList, "StockLookup">;
 
@@ -15,6 +17,7 @@ interface LocationAvailability {
 }
 
 export function StockLookupScreen(_props: Props) {
+  const lang = useLang();
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<StockSearchRow[]>([]);
   const [locations, setLocations] = useState<LocationDto[]>([]);
@@ -35,7 +38,7 @@ export function StockLookupScreen(_props: Props) {
     try {
       setRows(stockSearchResults(await apiClient.searchProducts(query.trim())));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Search failed");
+      setError(err instanceof Error ? err.message : t(lang, "stock.searchFailed"));
     }
   }
 
@@ -53,19 +56,22 @@ export function StockLookupScreen(_props: Props) {
       );
       setPerLocation(results);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Availability lookup failed");
+      setError(err instanceof Error ? err.message : t(lang, "stock.availabilityFailed"));
     }
   }
 
+  // Direction-aware chevron; full native RTL (I18nManager) is a reload-time step.
+  const backChevron = isRtl(lang) ? "›" : "‹";
+
   return (
     <View style={common.screen}>
-      <Text style={common.title}>Stock lookup</Text>
+      <Text style={common.title}>{t(lang, "stock.title")}</Text>
       {error && <Text style={common.error}>{error}</Text>}
       <TextInput
         style={common.input}
         value={query}
         onChangeText={setQuery}
-        placeholder="Search products or SKU"
+        placeholder={t(lang, "stock.searchPlaceholder")}
         placeholderTextColor={colors.subtle}
         autoCapitalize="none"
         returnKeyType="search"
@@ -75,7 +81,9 @@ export function StockLookupScreen(_props: Props) {
       {selected ? (
         <View>
           <TouchableOpacity onPress={() => setSelected(null)}>
-            <Text style={[common.subtle, { marginBottom: 8 }]}>‹ Back to results</Text>
+            <Text style={[common.subtle, { marginBottom: 8 }]}>
+              {backChevron} {t(lang, "stock.backToResults")}
+            </Text>
           </TouchableOpacity>
           <View style={common.card}>
             <Text style={[common.text, { fontWeight: "700" }]}>{selected.productName}</Text>
@@ -88,11 +96,15 @@ export function StockLookupScreen(_props: Props) {
               <Text style={[common.text, { fontWeight: "700" }]}>{location.name}</Text>
               {availability ? (
                 <Text style={[common.subtle, { marginTop: 2 }]}>
-                  Available {availability.available} · On hand {availability.onHand} · Reserved{" "}
-                  {availability.reserved} · In transit {availability.inTransit}
+                  {t(lang, "stock.availabilityLine", {
+                    available: availability.available,
+                    onHand: availability.onHand,
+                    reserved: availability.reserved,
+                    inTransit: availability.inTransit,
+                  })}
                 </Text>
               ) : (
-                <Text style={[common.subtle, { marginTop: 2 }]}>No data</Text>
+                <Text style={[common.subtle, { marginTop: 2 }]}>{t(lang, "stock.noData")}</Text>
               )}
             </View>
           ))}
@@ -101,7 +113,7 @@ export function StockLookupScreen(_props: Props) {
         <FlatList
           data={rows}
           keyExtractor={(row) => row.variantId}
-          ListEmptyComponent={<Text style={common.subtle}>Search to see stock.</Text>}
+          ListEmptyComponent={<Text style={common.subtle}>{t(lang, "stock.searchHint")}</Text>}
           renderItem={({ item }) => (
             <TouchableOpacity style={common.card} onPress={() => void showAvailability(item)}>
               <Text style={[common.text, { fontWeight: "700" }]}>{item.productName}</Text>

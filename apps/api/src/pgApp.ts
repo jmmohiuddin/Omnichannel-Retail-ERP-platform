@@ -226,7 +226,8 @@ export function buildPgApp(config: PgAppConfig) {
     if (err instanceof WmsError) {
       const status =
         err.code === "ALREADY_EXISTS" || err.code === "BAD_STATE" ? 409
-        : err.code === "SHORT_PICK" ? 422
+        : err.code === "SHORT_PICK" || err.code === "EXCEEDS_ON_HAND" ||
+          err.code === "INSUFFICIENT_BIN_QTY" ? 422
         : err.code.endsWith("NOT_FOUND") ? 404
         : 400;
       return reply.code(status).send({ error: err.code, message: err.message });
@@ -985,6 +986,46 @@ export function buildPgApp(config: PgAppConfig) {
     secured.get("/v1/wms/locations/:locationId/layout", async (req) => {
       const { locationId } = req.params as { locationId: string };
       return { zones: await wms.locationLayout(req.auth.tenantId, locationId) };
+    });
+
+    secured.post("/v1/wms/putaway", async (req, reply) => {
+      if (!wmsRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const parsed = z
+        .object({
+          binId: z.string().uuid(),
+          variantId: z.string().uuid(),
+          quantity: z.number().positive(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return wms.putaway(req.auth.tenantId, req.auth.userId, parsed.data);
+    });
+
+    secured.post("/v1/wms/bin-moves", async (req, reply) => {
+      if (!wmsRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const parsed = z
+        .object({
+          fromBinId: z.string().uuid(),
+          toBinId: z.string().uuid(),
+          variantId: z.string().uuid(),
+          quantity: z.number().positive(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return wms.moveBin(req.auth.tenantId, req.auth.userId, parsed.data);
+    });
+
+    secured.get("/v1/wms/bins/:binId/contents", async (req) => {
+      const { binId } = req.params as { binId: string };
+      return { items: await wms.binContents(req.auth.tenantId, binId) };
+    });
+
+    secured.get("/v1/wms/locations/:locationId/placement/:variantId", async (req) => {
+      const { locationId, variantId } = req.params as {
+        locationId: string;
+        variantId: string;
+      };
+      return wms.variantPlacement(req.auth.tenantId, locationId, variantId);
     });
 
     secured.post("/v1/wms/pick-lists", async (req, reply) => {

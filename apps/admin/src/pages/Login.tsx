@@ -1,9 +1,11 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { login } from "../lib/auth.js";
+import { useT } from "../lib/useT.js";
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const { t } = useT();
   const [slug, setSlug] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -18,7 +20,7 @@ export function LoginPage() {
       await login(slug.trim(), email.trim(), password);
       navigate("/", { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign-in failed");
+      setError(err instanceof Error ? err.message : t("login.failed"));
     } finally {
       setBusy(false);
     }
@@ -31,12 +33,12 @@ export function LoginPage() {
           <div className="brand" style={{ fontWeight: 700, fontSize: 18 }}>
             OmniRetail <span style={{ color: "var(--color-primary)" }}>OS</span>
           </div>
-          <p className="subtle">Sign in to your admin portal</p>
+          <p className="subtle">{t("login.subtitle")}</p>
         </div>
         {error && <div className="error-banner">{error}</div>}
         <form onSubmit={onSubmit}>
           <div className="field">
-            <label htmlFor="login-slug">Tenant slug</label>
+            <label htmlFor="login-slug">{t("login.slug")}</label>
             <input
               id="login-slug"
               value={slug}
@@ -47,7 +49,7 @@ export function LoginPage() {
             />
           </div>
           <div className="field">
-            <label htmlFor="login-email">Email</label>
+            <label htmlFor="login-email">{t("login.email")}</label>
             <input
               id="login-email"
               type="email"
@@ -58,7 +60,7 @@ export function LoginPage() {
             />
           </div>
           <div className="field">
-            <label htmlFor="login-password">Password</label>
+            <label htmlFor="login-password">{t("login.password")}</label>
             <input
               id="login-password"
               type="password"
@@ -69,11 +71,11 @@ export function LoginPage() {
             />
           </div>
           <button type="submit" disabled={busy}>
-            {busy ? "Signing in…" : "Sign in"}
+            {busy ? t("login.submitting") : t("login.submit")}
           </button>
         </form>
         <p className="subtle">
-          New business? <Link to="/register">Create a tenant</Link>
+          {t("login.newBusiness")} <Link to="/register">{t("login.createTenant")}</Link>
         </p>
       </div>
     </div>

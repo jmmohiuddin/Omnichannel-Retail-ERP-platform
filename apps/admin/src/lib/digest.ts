@@ -2,17 +2,18 @@
  * Error mapping for the AI daily digest screen. Pure function, no I/O.
  */
 import { ApiError } from "./api.js";
+import { t, type Lang } from "./i18n.js";
 
 /** Friendly copy for the digest endpoint's budget/role failures. */
-export function digestErrorMessage(err: unknown): string {
+export function digestErrorMessage(err: unknown, lang: Lang = "en"): string {
   if (err instanceof ApiError) {
     if (err.status === 429 && err.code === "AI_BUDGET_EXCEEDED") {
-      return "Today's AI budget has been used up, so the digest can't be generated right now. It will be back tomorrow — the underlying numbers are still on the Dashboard and Finance pages.";
+      return t(lang, "digest.budgetExceeded");
     }
     if (err.status === 403) {
-      return "The daily digest is available to manager and owner roles only. Ask an owner to upgrade your role if you need access.";
+      return t(lang, "digest.forbidden");
     }
     return err.message;
   }
-  return err instanceof Error ? err.message : "Failed to load the daily digest.";
+  return err instanceof Error ? err.message : t(lang, "digest.loadFailed");
 }

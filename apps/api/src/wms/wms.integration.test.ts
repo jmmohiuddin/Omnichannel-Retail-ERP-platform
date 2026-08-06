@@ -236,4 +236,164 @@ describe.skipIf(!run)("wms", () => {
 
     expect((await post(`/v1/orders/${orderId}/fulfill`, {})).statusCode).toBe(409);
   });
+
+  // -------------------------------------------------------------------------
+  // bin_stock overlay (022): per-bin quantities WITHIN a location, layered on
+  // top of the ledger-derived stock_level. Runs after the v1 directory tests;
+  // uses fresh zones/bins/variants so their numbers stay self-contained.
+  // -------------------------------------------------------------------------
+  describe("bin stock overlay", () => {
+    let bulkB1 = "";   // zone BULK (position 3), bin 1
+    let bulkB2 = "";   // zone BULK, bin 2
+    let overflowO1 = ""; // zone OVERFLOW (position 4), bin 1
+    let otherLocBin = ""; // a bin at a DIFFERENT location
+    let variantP = ""; // putaway/move subject: 10 on_hand at the warehouse
+    let variantQ = ""; // pick subject: 5 on_hand at the warehouse
+
+    const receive = (variantId: string, quantity: number) =>
+      post("/v1/inventory/movements", {
+        id: randomUUID(), movementType: "receipt", variantId, quantity,
+        to: { locationId: warehouseId, state: "on_hand" },
+        reference: { type: "grn", id: randomUUID() },
+      });
+
+    beforeAll(async () => {
+      const bulk = await wms.createZone(tenantId, {
+        locationId: warehouseId, code: "BULK", name: "Bulk racking", position: 3,
+      });
+      const overflow = await wms.createZone(tenantId, {
+        locationId: warehouseId, code: "OVERFLOW", name: "Overflow", position: 4,
+      });
+      bulkB1 = (await wms.createBin(tenantId, { zoneId: bulk.zoneId, code: "B1", position: 1 })).binId;
+      bulkB2 = (await wms.createBin(tenantId, { zoneId: bulk.zoneId, code: "B2", position: 2 })).binId;
+      overflowO1 = (await wms.createBin(tenantId, { zoneId: overflow.zoneId, code: "O1", position: 1 })).binId;
+
+      const otherLocId = (await post("/v1/locations", { kind: "warehouse", name: "WH2", code: "WH2" })).json().id;
+      const otherZone = await wms.createZone(tenantId, {
+        locationId: otherLocId, code: "REM", name: "Remote", position: 1,
+      });
+      otherLocBin = (await wms.createBin(tenantId, { zoneId: otherZone.zoneId, code: "R1" })).binId;
+
+      const productId = (await post("/v1/products", {
+        name: "Binned widget", slug: `binned-widget-${suffix}`, tracking: "none",
+      })).json().id;
+      const mkVariant = async (sku: string) =>
+        (await post(`/v1/products/${productId}/variants`, { sku, priceMinor: 1500, currency: "AED" })).json().id;
+      variantP = await mkVariant("WMS-P");
+      variantQ = await mkVariant("WMS-Q");
+      expect((await receive(variantP, 10)).statusCode).toBe(201);
+      expect((await receive(variantQ, 5)).statusCode).toBe(201);
+    }, 30_000);
+
+    it("putaway within on_hand credits the bin; placement shows the floor remainder", async () => {
+      expect(await wms.putaway(tenantId, userId, {
+        binId: bulkB2, variantId: variantP, quantity: 6,
+      })).toEqual({ binId: bulkB2, variantId: variantP, binQuantity: 6 });
+
+      const placement = await wms.variantPlacement(tenantId, warehouseId, variantP);
+      expect(placement).toEqual({
+        onHand: 10, binned: 6, unbinned: 4,
+        bins: [{ binId: bulkB2, binPath: "BULK/B2", quantity: 6 }],
+      });
+      expect(await wms.binContents(tenantId, bulkB2)).toEqual([
+        { variantId: variantP, sku: "WMS-P", quantity: 6 },
+      ]);
+    });
+
+    it("EXCEEDS_ON_HAND: cannot bin beyond location on_hand minus already-binned", async () => {
+      // on_hand 10, binned 6 → only 4 left to putaway anywhere at this location.
+      await expect(
+        wms.putaway(tenantId, userId, { binId: bulkB1, variantId: variantP, quantity: 5 }),
+      ).rejects.toMatchObject({ name: "WmsError", code: "EXCEEDS_ON_HAND" });
+
+      // Exactly the remainder is fine (upsert accumulates per bin)…
+      expect((await wms.putaway(tenantId, userId, {
+        binId: bulkB1, variantId: variantP, quantity: 4,
+      })).binQuantity).toBe(4);
+      // …after which even the smallest putaway over-covers.
+      await expect(
+        wms.putaway(tenantId, userId, { binId: overflowO1, variantId: variantP, quantity: 0.001 }),
+      ).rejects.toMatchObject({ name: "WmsError", code: "EXCEEDS_ON_HAND" });
+
+      await expect(
+        wms.putaway(tenantId, userId, { binId: randomUUID(), variantId: variantP, quantity: 1 }),
+      ).rejects.toMatchObject({ name: "WmsError", code: "BIN_NOT_FOUND" });
+    });
+
+    it("moveBin shifts quantity between bins across zones of the same location", async () => {
+      expect(await wms.moveBin(tenantId, userId, {
+        fromBinId: bulkB1, toBinId: overflowO1, variantId: variantP, quantity: 3,
+      })).toEqual({ moved: 3 });
+
+      expect(await wms.binContents(tenantId, bulkB1)).toEqual([
+        { variantId: variantP, sku: "WMS-P", quantity: 1 },
+      ]);
+      expect(await wms.binContents(tenantId, overflowO1)).toEqual([
+        { variantId: variantP, sku: "WMS-P", quantity: 3 },
+      ]);
+      // Location total unchanged: still 10 binned, nothing on the floor.
+      const placement = await wms.variantPlacement(tenantId, warehouseId, variantP);
+      expect(placement.binned).toBe(10);
+      expect(placement.unbinned).toBe(0);
+    });
+
+    it("CROSS_LOCATION: bins of different locations cannot exchange bin stock", async () => {
+      await expect(
+        wms.moveBin(tenantId, userId, {
+          fromBinId: bulkB2, toBinId: otherLocBin, variantId: variantP, quantity: 1,
+        }),
+      ).rejects.toMatchObject({ name: "WmsError", code: "CROSS_LOCATION" });
+    });
+
+    it("INSUFFICIENT_BIN_QTY: debit-or-fail on the source bin", async () => {
+      // bulkB1 holds 1 of P — asking for more fails without touching either bin.
+      await expect(
+        wms.moveBin(tenantId, userId, {
+          fromBinId: bulkB1, toBinId: bulkB2, variantId: variantP, quantity: 99,
+        }),
+      ).rejects.toMatchObject({ name: "WmsError", code: "INSUFFICIENT_BIN_QTY" });
+      // A variant the source bin has never held fails the same way.
+      await expect(
+        wms.moveBin(tenantId, userId, {
+          fromBinId: bulkB1, toBinId: bulkB2, variantId: variantQ, quantity: 1,
+        }),
+      ).rejects.toMatchObject({ name: "WmsError", code: "INSUFFICIENT_BIN_QTY" });
+      expect(await wms.binContents(tenantId, bulkB1)).toEqual([
+        { variantId: variantP, sku: "WMS-P", quantity: 1 },
+      ]);
+    });
+
+    it("createPickList prefers a stocked bin over the directory; recordPicks debits it", async () => {
+      // Directory says BULK/B1 (earlier in the walk) but the stock physically
+      // sits in OVERFLOW/O1 — the stocked bin must win the suggestion.
+      await wms.assignBin(tenantId, { binId: bulkB1, variantId: variantQ });
+      await wms.putaway(tenantId, userId, { binId: overflowO1, variantId: variantQ, quantity: 3 });
+
+      const qOrder = await placeWebOrder([{ variantId: variantQ, quantity: 2 }]);
+      const pick = await wms.createPickList(tenantId, userId, qOrder);
+      expect(pick.locationId).toBe(warehouseId);
+      expect(pick.lines).toEqual([
+        expect.objectContaining({ sku: "WMS-Q", quantity: 2, binPath: "OVERFLOW/O1" }),
+      ]);
+
+      await wms.recordPicks(tenantId, userId, pick.pickListId, [
+        { variantId: variantQ, pickedQty: 2 },
+      ]);
+      expect(await wms.binContents(tenantId, overflowO1)).toEqual([
+        { variantId: variantP, sku: "WMS-P", quantity: 3 },
+        { variantId: variantQ, sku: "WMS-Q", quantity: 1 },
+      ]);
+      expect(await wms.completePickList(tenantId, userId, pick.pickListId)).toEqual({ status: "completed" });
+    });
+
+    it("variantPlacement reconciles binned + unbinned after the pick", async () => {
+      // Q: received 5, putaway 3 (floor 2). The order reserved 2 (on_hand 5→3)
+      // and the pick debited the bin by 2 (3→1): on_hand 3 = binned 1 + floor 2.
+      const placement = await wms.variantPlacement(tenantId, warehouseId, variantQ);
+      expect(placement).toEqual({
+        onHand: 3, binned: 1, unbinned: 2,
+        bins: [{ binId: overflowO1, binPath: "OVERFLOW/O1", quantity: 1 }],
+      });
+    });
+  });
 });

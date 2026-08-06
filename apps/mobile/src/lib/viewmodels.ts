@@ -4,6 +4,7 @@
  * mapping is unit-testable in node.
  */
 import type { AnalyticsSummary, ApprovalDto, ProductDto } from "./api";
+import { t, type Lang } from "./i18n";
 import { formatMinor } from "./money";
 
 // ---- Dashboard ----
@@ -18,28 +19,37 @@ export interface DashboardCard {
   tone: DashboardCardTone;
 }
 
-/** Owner-home card list from GET /v1/analytics/summary ("the 11 pm check"). */
-export function dashboardCards(summary: AnalyticsSummary): DashboardCard[] {
+/** "{n} order(s)" in the requested language. */
+function ordersText(lang: Lang, count: number): string {
+  return t(lang, count === 1 ? "dashboard.order" : "dashboard.orders", { count });
+}
+
+/**
+ * Owner-home card list from GET /v1/analytics/summary ("the 11 pm check").
+ * `lang` defaults to English; AED values keep the en-AE formatter (Western
+ * numerals) in both languages — see money.ts.
+ */
+export function dashboardCards(summary: AnalyticsSummary, lang: Lang = "en"): DashboardCard[] {
   const cards: DashboardCard[] = [
     {
       key: "today-revenue",
-      label: "Today's sales",
+      label: t(lang, "dashboard.todaySales"),
       value: formatMinor(summary.today.revenueMinor),
-      hint: `${summary.today.orders} order${summary.today.orders === 1 ? "" : "s"} · VAT ${formatMinor(summary.today.vatMinor)}`,
+      hint: `${ordersText(lang, summary.today.orders)} · ${t(lang, "dashboard.vat", { amount: formatMinor(summary.today.vatMinor) })}`,
       tone: "revenue",
     },
     {
       key: "week-revenue",
-      label: "Last 7 days",
+      label: t(lang, "dashboard.last7Days"),
       value: formatMinor(summary.last7Days.revenueMinor),
-      hint: `${summary.last7Days.orders} order${summary.last7Days.orders === 1 ? "" : "s"}`,
+      hint: ordersText(lang, summary.last7Days.orders),
       tone: "revenue",
     },
     {
       key: "stock-value",
-      label: "Stock value (cost)",
+      label: t(lang, "dashboard.stockValue"),
       value: formatMinor(summary.stockValueMinor),
-      hint: `${summary.onHandUnits} units on hand`,
+      hint: t(lang, "dashboard.unitsOnHand", { units: summary.onHandUnits }),
       tone: "stock",
     },
   ];
@@ -48,9 +58,12 @@ export function dashboardCards(summary: AnalyticsSummary): DashboardCard[] {
   if (top) {
     cards.push({
       key: "top-seller",
-      label: "Top seller (30d)",
+      label: t(lang, "dashboard.topSeller"),
       value: top.description ?? top.variantId,
-      hint: `${top.units} units · ${formatMinor(top.revenue)}`,
+      hint: t(lang, "dashboard.unitsSold", {
+        units: top.units,
+        revenue: formatMinor(top.revenue),
+      }),
       tone: "neutral",
     });
   }

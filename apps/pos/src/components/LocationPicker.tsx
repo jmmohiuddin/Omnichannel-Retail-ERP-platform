@@ -1,4 +1,5 @@
 import type { LocationSummary } from "../lib/api.js";
+import { LangToggle, useLang } from "./LangProvider.js";
 
 interface Props {
   locations: LocationSummary[];
@@ -7,13 +8,17 @@ interface Props {
 }
 
 export function LocationPicker({ locations, onPick, onSignOut }: Props) {
+  const { t } = useLang();
   return (
     <main className="centered-screen">
       <div className="panel location-panel">
-        <h1 className="brand">Choose location</h1>
-        <p className="muted">Sales from this register will post to the selected location.</p>
+        <div className="panel-lang-row">
+          <LangToggle />
+        </div>
+        <h1 className="brand">{t("location.title")}</h1>
+        <p className="muted">{t("location.subtitle")}</p>
         {locations.length === 0 ? (
-          <p className="error-text">No locations found for this tenant — create one in the back office first.</p>
+          <p className="error-text">{t("location.none")}</p>
         ) : (
           <ul className="location-list">
             {locations.map((loc) => (
@@ -29,7 +34,7 @@ export function LocationPicker({ locations, onPick, onSignOut }: Props) {
           </ul>
         )}
         <button type="button" className="btn btn-ghost" onClick={onSignOut}>
-          Sign out
+          {t("common.signOut")}
         </button>
       </div>
     </main>

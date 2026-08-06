@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from "react";
 import { Navigate, NavLink, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { getSession, signOut, subscribe, type Session } from "./lib/auth.js";
+import { toggleLang } from "./lib/langStore.js";
+import { useT } from "./lib/useT.js";
 import { LoginPage } from "./pages/Login.js";
 import { RegisterPage } from "./pages/Register.js";
 import { DashboardPage } from "./pages/Dashboard.js";
@@ -17,31 +19,50 @@ function useSession(): Session | null {
   return useSyncExternalStore(subscribe, getSession, getSession);
 }
 
+/** Header EN / عربي switch — the active language is emphasized. */
+export function LangToggle() {
+  const { lang, t } = useT();
+  return (
+    <button
+      type="button"
+      className="secondary"
+      aria-label={t("nav.language")}
+      onClick={() => toggleLang()}
+    >
+      <span style={{ fontWeight: lang === "en" ? 700 : 400 }}>EN</span>
+      {" / "}
+      <span style={{ fontWeight: lang === "ar" ? 700 : 400 }}>عربي</span>
+    </button>
+  );
+}
+
 function Shell({ session }: { session: Session }) {
+  const { t } = useT();
   return (
     <>
       <header className="topnav">
         <div className="brand">
           OmniRetail <span>OS</span>
         </div>
-        <nav aria-label="Primary">
+        <nav aria-label={t("nav.primary")}>
           <NavLink to="/" end>
-            Dashboard
+            {t("nav.dashboard")}
           </NavLink>
-          <NavLink to="/catalog">Catalog</NavLink>
-          <NavLink to="/inventory">Inventory</NavLink>
-          <NavLink to="/orders">Orders</NavLink>
-          <NavLink to="/approvals">Approvals</NavLink>
-          <NavLink to="/finance">Finance</NavLink>
-          <NavLink to="/digest">Digest</NavLink>
-          <NavLink to="/audit">Audit</NavLink>
+          <NavLink to="/catalog">{t("nav.catalog")}</NavLink>
+          <NavLink to="/inventory">{t("nav.inventory")}</NavLink>
+          <NavLink to="/orders">{t("nav.orders")}</NavLink>
+          <NavLink to="/approvals">{t("nav.approvals")}</NavLink>
+          <NavLink to="/finance">{t("nav.finance")}</NavLink>
+          <NavLink to="/digest">{t("nav.digest")}</NavLink>
+          <NavLink to="/audit">{t("nav.audit")}</NavLink>
         </nav>
         <div className="session">
-          <span className="tenant-chip" title={`Tenant ${session.tenantId}`}>
+          <span className="tenant-chip" title={t("nav.tenantTitle", { id: session.tenantId })}>
             {session.slug}
           </span>
+          <LangToggle />
           <button type="button" className="secondary" onClick={() => signOut()}>
-            Sign out
+            {t("nav.signOut")}
           </button>
         </div>
       </header>

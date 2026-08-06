@@ -8,8 +8,10 @@ import {
 } from "../lib/api.js";
 import { decimalToMinor, formatMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useT } from "../lib/useT.js";
 
 function CreateProductForm({ onCreated }: { onCreated: () => void }) {
+  const { t, tEnum } = useT();
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [slugTouched, setSlugTouched] = useState(false);
@@ -36,7 +38,7 @@ function CreateProductForm({ onCreated }: { onCreated: () => void }) {
       setTracking("none");
       onCreated();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Create failed");
+      setError(err instanceof Error ? err.message : t("catalog.createFailed"));
     } finally {
       setBusy(false);
     }
@@ -44,11 +46,11 @@ function CreateProductForm({ onCreated }: { onCreated: () => void }) {
 
   return (
     <section className="card">
-      <h2>New product</h2>
+      <h2>{t("catalog.newProduct")}</h2>
       {error && <div className="error-banner">{error}</div>}
       <form className="panel" onSubmit={onSubmit}>
         <div className="field" style={{ flex: 2 }}>
-          <label htmlFor="np-name">Name</label>
+          <label htmlFor="np-name">{t("catalog.name")}</label>
           <input
             id="np-name"
             value={name}
@@ -61,7 +63,7 @@ function CreateProductForm({ onCreated }: { onCreated: () => void }) {
           />
         </div>
         <div className="field" style={{ flex: 2 }}>
-          <label htmlFor="np-slug">Slug</label>
+          <label htmlFor="np-slug">{t("catalog.slug")}</label>
           <input
             id="np-slug"
             value={slug}
@@ -74,19 +76,19 @@ function CreateProductForm({ onCreated }: { onCreated: () => void }) {
           />
         </div>
         <div className="field">
-          <label htmlFor="np-tracking">Tracking</label>
+          <label htmlFor="np-tracking">{t("catalog.tracking")}</label>
           <select
             id="np-tracking"
             value={tracking}
             onChange={(e) => setTracking(e.target.value as Tracking)}
           >
-            <option value="none">None</option>
-            <option value="batch">Batch</option>
-            <option value="serialized">Serialized (IMEI)</option>
+            <option value="none">{tEnum("tracking", "none")}</option>
+            <option value="batch">{tEnum("tracking", "batch")}</option>
+            <option value="serialized">{tEnum("tracking", "serialized")}</option>
           </select>
         </div>
         <button type="submit" disabled={busy}>
-          {busy ? "Creating…" : "Create product"}
+          {busy ? t("catalog.creating") : t("catalog.create")}
         </button>
       </form>
     </section>
@@ -94,6 +96,7 @@ function CreateProductForm({ onCreated }: { onCreated: () => void }) {
 }
 
 function AddVariantForm({ productId, onCreated }: { productId: string; onCreated: () => void }) {
+  const { t } = useT();
   const [sku, setSku] = useState("");
   const [price, setPrice] = useState("");
   const [barcode, setBarcode] = useState("");
@@ -104,7 +107,7 @@ function AddVariantForm({ productId, onCreated }: { productId: string; onCreated
     e.preventDefault();
     const priceMinor = decimalToMinor(price);
     if (priceMinor === null) {
-      setError("Price must be a positive AED amount with up to 2 decimals, e.g. 1299.00");
+      setError(t("catalog.priceInvalid"));
       return;
     }
     setBusy(true);
@@ -121,7 +124,7 @@ function AddVariantForm({ productId, onCreated }: { productId: string; onCreated
       setBarcode("");
       onCreated();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Create failed");
+      setError(err instanceof Error ? err.message : t("catalog.createFailed"));
     } finally {
       setBusy(false);
     }
@@ -132,7 +135,7 @@ function AddVariantForm({ productId, onCreated }: { productId: string; onCreated
       {error && <div className="error-banner">{error}</div>}
       <form className="panel" onSubmit={onSubmit}>
         <div className="field">
-          <label htmlFor={`sku-${productId}`}>SKU</label>
+          <label htmlFor={`sku-${productId}`}>{t("th.sku")}</label>
           <input
             id={`sku-${productId}`}
             value={sku}
@@ -142,7 +145,7 @@ function AddVariantForm({ productId, onCreated }: { productId: string; onCreated
           />
         </div>
         <div className="field">
-          <label htmlFor={`price-${productId}`}>Price (AED)</label>
+          <label htmlFor={`price-${productId}`}>{t("catalog.priceAed")}</label>
           <input
             id={`price-${productId}`}
             value={price}
@@ -153,7 +156,7 @@ function AddVariantForm({ productId, onCreated }: { productId: string; onCreated
           />
         </div>
         <div className="field">
-          <label htmlFor={`barcode-${productId}`}>Barcode (optional)</label>
+          <label htmlFor={`barcode-${productId}`}>{t("catalog.barcodeOptional")}</label>
           <input
             id={`barcode-${productId}`}
             value={barcode}
@@ -161,7 +164,7 @@ function AddVariantForm({ productId, onCreated }: { productId: string; onCreated
           />
         </div>
         <button type="submit" disabled={busy}>
-          {busy ? "Adding…" : "Add variant"}
+          {busy ? t("catalog.adding") : t("catalog.addVariant")}
         </button>
       </form>
     </>
@@ -169,6 +172,7 @@ function AddVariantForm({ productId, onCreated }: { productId: string; onCreated
 }
 
 function ProductRow({ product, onChanged }: { product: ProductDto; onChanged: () => void }) {
+  const { t, tEnum } = useT();
   return (
     <div className="card">
       <div className="page-head" style={{ marginBlockEnd: 0 }}>
@@ -177,15 +181,17 @@ function ProductRow({ product, onChanged }: { product: ProductDto; onChanged: ()
           <span className="faint mono">/{product.slug}</span>
         </div>
         <div>
-          <span className="badge neutral">{product.tracking}</span>{" "}
+          <span className="badge neutral">{tEnum("tracking", product.tracking)}</span>{" "}
           <span className={`badge ${product.status === "active" ? "in" : "neutral"}`}>
-            {product.status}
+            {tEnum("pstatus", product.status)}
           </span>
         </div>
       </div>
       <details className="variants">
         <summary>
-          {product.variants.length} variant{product.variants.length === 1 ? "" : "s"}
+          {product.variants.length === 1
+            ? t("catalog.variantOne")
+            : t("catalog.variantMany", { count: product.variants.length })}
         </summary>
         <div className="sub-table">
           {product.variants.length > 0 && (
@@ -193,9 +199,9 @@ function ProductRow({ product, onChanged }: { product: ProductDto; onChanged: ()
               <table>
                 <thead>
                   <tr>
-                    <th>SKU</th>
-                    <th>Barcode</th>
-                    <th className="num">Price</th>
+                    <th>{t("th.sku")}</th>
+                    <th>{t("th.barcode")}</th>
+                    <th className="num">{t("th.price")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -220,6 +226,7 @@ function ProductRow({ product, onChanged }: { product: ProductDto; onChanged: ()
 }
 
 export function CatalogPage() {
+  const { t } = useT();
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState("");
   const { data: products, error, loading, reload } = useAsync(
@@ -230,8 +237,10 @@ export function CatalogPage() {
   return (
     <>
       <div className="page-head">
-        <h1>Catalog</h1>
-        <span className="subtle">{products ? `${products.length} products` : ""}</span>
+        <h1>{t("nav.catalog")}</h1>
+        <span className="subtle">
+          {products ? t("catalog.countProducts", { count: products.length }) : ""}
+        </span>
       </div>
 
       <CreateProductForm onCreated={reload} />
@@ -245,25 +254,29 @@ export function CatalogPage() {
           }}
         >
           <div className="field" style={{ minInlineSize: 260 }}>
-            <label htmlFor="catalog-search">Search products</label>
+            <label htmlFor="catalog-search">{t("catalog.searchLabel")}</label>
             <input
               id="catalog-search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Name or slug…"
+              placeholder={t("catalog.searchPlaceholder")}
             />
           </div>
           <button type="submit" className="secondary">
-            Search
+            {t("common.search")}
           </button>
         </form>
       </div>
 
-      {error && <div className="error-banner">Failed to load products: {error}</div>}
+      {error && <div className="error-banner">{t("catalog.loadFailed", { error })}</div>}
       {loading ? (
-        <p className="empty">Loading catalog…</p>
+        <p className="empty">{t("catalog.loading")}</p>
       ) : products && products.length === 0 ? (
-        <p className="empty">No products{submitted ? ` matching “${submitted}”` : " yet"}.</p>
+        <p className="empty">
+          {submitted
+            ? t("catalog.noProductsMatching", { query: submitted })
+            : t("catalog.noProducts")}
+        </p>
       ) : (
         <div className="stack">
           {products?.map((p) => <ProductRow key={p.id} product={p} onChanged={reload} />)}

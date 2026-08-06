@@ -9,8 +9,9 @@ import {
   type VariantDto,
 } from "../lib/api.js";
 import { formatMinor } from "../lib/money.js";
-import { humanState, presentMovement } from "../lib/movements.js";
+import { presentMovement } from "../lib/movements.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useT } from "../lib/useT.js";
 
 interface DetailData {
   locations: LocationDto[];
@@ -54,6 +55,7 @@ async function loadDetail(variantId: string, requestedLocationId: string | null)
 }
 
 function AvailabilityCard({ availability }: { availability: Record<string, unknown> }) {
+  const { tEnum } = useT();
   const entries = Object.entries(availability).filter(
     ([, v]) => typeof v === "number" || typeof v === "string",
   );
@@ -62,7 +64,9 @@ function AvailabilityCard({ availability }: { availability: Record<string, unkno
     <div className="kv-grid">
       {entries.map(([key, value]) => (
         <div className="stat" key={key}>
-          <div className="label">{humanState(key.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase())}</div>
+          <div className="label">
+            {tEnum("state", key.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase())}
+          </div>
           <div className="value">{String(value)}</div>
         </div>
       ))}
@@ -71,6 +75,7 @@ function AvailabilityCard({ availability }: { availability: Record<string, unkno
 }
 
 export function VariantDetailPage() {
+  const { t, lang } = useT();
   const { variantId = "" } = useParams();
   const [params, setParams] = useSearchParams();
   const requestedLocationId = params.get("locationId");
@@ -80,8 +85,8 @@ export function VariantDetailPage() {
     [variantId, requestedLocationId],
   );
 
-  if (loading) return <p className="empty">Loading variant…</p>;
-  if (error) return <div className="error-banner">Failed to load variant: {error}</div>;
+  if (loading) return <p className="empty">{t("variant.loading")}</p>;
+  if (error) return <div className="error-banner">{t("variant.loadFailed", { error })}</div>;
   if (!data) return null;
 
   const locationName = (id: string) => data.locations.find((l) => l.id === id)?.name;
@@ -92,7 +97,7 @@ export function VariantDetailPage() {
       <div className="page-head">
         <div>
           <p className="subtle" style={{ marginBlock: 0 }}>
-            <Link to="/inventory">Inventory</Link> / Variant
+            <Link to="/inventory">{t("nav.inventory")}</Link> / {t("variant.breadcrumb")}
           </p>
           <h1 className="mono">{title}</h1>
           {data.variant && (
@@ -102,14 +107,14 @@ export function VariantDetailPage() {
               {data.variant.barcode ? (
                 <>
                   {" "}
-                  · barcode <span className="mono">{data.variant.barcode}</span>
+                  · {t("variant.barcode")} <span className="mono">{data.variant.barcode}</span>
                 </>
               ) : null}
             </p>
           )}
         </div>
         <div className="field">
-          <label htmlFor="vd-location">Availability at</label>
+          <label htmlFor="vd-location">{t("variant.availabilityAt")}</label>
           <select
             id="vd-location"
             value={data.locationId ?? ""}
@@ -125,35 +130,35 @@ export function VariantDetailPage() {
       </div>
 
       <section className="card">
-        <h2>Availability</h2>
+        <h2>{t("variant.availability")}</h2>
         {data.availability ? (
           <AvailabilityCard availability={data.availability} />
         ) : (
-          <p className="empty">No availability data at this location.</p>
+          <p className="empty">{t("variant.noAvailability")}</p>
         )}
       </section>
 
       <section className="card" style={{ marginBlockStart: "var(--space-4)" }}>
-        <h2>Movement history</h2>
+        <h2>{t("variant.movementHistory")}</h2>
         {data.movements.length === 0 ? (
-          <p className="empty">No movements recorded for this variant.</p>
+          <p className="empty">{t("variant.noMovements")}</p>
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th className="num">Seq</th>
-                  <th>Time</th>
-                  <th>Type</th>
-                  <th className="num">Qty</th>
-                  <th>From → To</th>
-                  <th>Reference</th>
-                  <th>Note</th>
+                  <th className="num">{t("th.seq")}</th>
+                  <th>{t("th.time")}</th>
+                  <th>{t("th.type")}</th>
+                  <th className="num">{t("th.qty")}</th>
+                  <th>{t("th.flow")}</th>
+                  <th>{t("th.reference")}</th>
+                  <th>{t("th.note")}</th>
                 </tr>
               </thead>
               <tbody>
                 {data.movements.map((m) => {
-                  const row = presentMovement(m, { locationName });
+                  const row = presentMovement(m, { locationName }, lang);
                   return (
                     <tr key={row.id}>
                       <td className="num mono">{row.seq}</td>

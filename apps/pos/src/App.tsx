@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createApiClient, type LocationSummary } from "./lib/api.js";
+import type { MessageKey } from "./lib/i18n.js";
 import { SaleQueue } from "./lib/saleQueue.js";
 import {
   clearSession,
@@ -12,19 +13,27 @@ import {
   type StoredLocation,
   type StoredSession,
 } from "./lib/session.js";
+import { LangToggle, useLang } from "./components/LangProvider.js";
 import { LoginView } from "./components/LoginView.js";
 import { LocationPicker } from "./components/LocationPicker.js";
 import { SaleScreen } from "./components/SaleScreen.js";
 
 type Phase =
   | { name: "login" }
-  | { name: "setup"; message: string }
+  // Setup progress is stored as a message KEY so it re-renders translated
+  // when the cashier flips the language mid-bootstrap.
+  | { name: "setup"; messageKey: MessageKey }
   | { name: "pick-location"; locations: LocationSummary[] }
   | { name: "sale"; deviceId: string; location: StoredLocation };
 
 export function App() {
+  const { t } = useLang();
   const [session, setSession] = useState<StoredSession | null>(() => loadSession());
-  const [phase, setPhase] = useState<Phase>(session ? { name: "setup", message: "Starting…" } : { name: "login" });
+  const [phase, setPhase] = useState<Phase>(
+    session ? { name: "setup", messageKey: "setup.starting" } : { name: "login" },
+  );
+  // Server-sent error text (already human-readable); empty string means a
+  // non-Error failure — rendered as the localized generic fallback.
   const [setupError, setSetupError] = useState<string | null>(null);
 
   // Token lives in a ref so the api client closure always sees the latest.
@@ -57,12 +66,13 @@ export function App() {
     try {
       let deviceId = loadDeviceId();
       if (!deviceId) {
-        setPhase({ name: "setup", message: "Registering this register…" });
+        setPhase({ name: "setup", messageKey: "setup.registeringDevice" });
+        // Device name is back-office data, not UI copy — stays English.
         const device = await api.registerDevice(`POS Register — ${navigator.platform || "desktop"}`);
         deviceId = device.id;
         saveDeviceId(deviceId);
       }
-      setPhase({ name: "setup", message: "Loading locations…" });
+      setPhase({ name: "setup", messageKey: "setup.loadingLocations" });
       const { items } = await api.listLocations();
       const saved = loadLocation();
       const match = saved ? items.find((l) => l.id === saved.id) : undefined;
@@ -72,9 +82,8 @@ export function App() {
         setPhase({ name: "pick-location", locations: items });
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Setup failed";
-      setSetupError(message);
-      setPhase({ name: "setup", message: "Setup failed" });
+      setSetupError(err instanceof Error ? err.message : "");
+      setPhase({ name: "setup", messageKey: "setup.failed" });
     }
   }, [api]);
 
@@ -86,7 +95,7 @@ export function App() {
   const handleLoggedIn = useCallback((s: StoredSession) => {
     saveSession(s);
     setSession(s);
-    setPhase({ name: "setup", message: "Starting…" });
+    setPhase({ name: "setup", messageKey: "setup.starting" });
   }, []);
 
   const handleLocationPicked = useCallback((loc: LocationSummary) => {
@@ -104,17 +113,20 @@ export function App() {
     return (
       <main className="centered-screen">
         <div className="panel setup-panel">
+          <div className="panel-lang-row">
+            <LangToggle />
+          </div>
           <h1 className="brand">OmniRetail POS</h1>
-          <p role="status">{phase.message}</p>
-          {setupError && (
+          <p role="status">{t(phase.messageKey)}</p>
+          {setupError !== null && (
             <>
-              <p className="error-text">{setupError}</p>
+              <p className="error-text">{setupError.length > 0 ? setupError : t("setup.failed")}</p>
               <div className="row-gap">
                 <button type="button" className="btn" onClick={() => void bootstrap()}>
-                  Retry
+                  {t("common.retry")}
                 </button>
                 <button type="button" className="btn btn-ghost" onClick={logout}>
-                  Sign out
+                  {t("common.signOut")}
                 </button>
               </div>
             </>

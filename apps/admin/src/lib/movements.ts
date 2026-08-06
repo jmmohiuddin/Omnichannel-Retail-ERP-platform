@@ -3,6 +3,7 @@
  * human-readable strings the audit tables render. Pure functions, no I/O.
  */
 import type { MovementBucketDto, MovementDto } from "./api.js";
+import { enumLabel, t, type Lang } from "./i18n.js";
 
 export type BadgeTone = "in" | "out" | "neutral";
 
@@ -31,9 +32,9 @@ export function humanState(state: string): string {
   return words.length === 0 ? state : words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-/** "transfer_out" → "Transfer out" */
-export function movementTypeLabel(movementType: string): string {
-  return humanState(movementType);
+/** "transfer_out" → "Transfer out" (EN) / "تحويل صادر" (AR). */
+export function movementTypeLabel(movementType: string, lang: Lang = "en"): string {
+  return enumLabel(lang, "mtype", movementType);
 }
 
 export function movementTone(movementType: string): BadgeTone {
@@ -53,18 +54,25 @@ export function shortId(id: string): string {
 export function bucketLabel(
   bucket: MovementBucketDto | null | undefined,
   locationName: (id: string) => string | undefined,
+  lang: Lang = "en",
 ): string {
-  if (!bucket) return "External";
+  if (!bucket) return t(lang, "movement.external");
   const name = locationName(bucket.locationId) ?? shortId(bucket.locationId);
-  return `${name} · ${humanState(bucket.state)}`;
+  return `${name} · ${enumLabel(lang, "state", bucket.state)}`;
 }
 
-/** "External → Main Store · On hand" */
+/**
+ * "External → Main Store · On hand". In Arabic the arrow points left ("←"):
+ * the source renders rightmost in RTL, so a left arrow keeps the visual flow
+ * source → destination.
+ */
 export function flowLabel(
   movement: Pick<MovementDto, "from" | "to">,
   locationName: (id: string) => string | undefined,
+  lang: Lang = "en",
 ): string {
-  return `${bucketLabel(movement.from, locationName)} → ${bucketLabel(movement.to, locationName)}`;
+  const arrow = lang === "ar" ? "←" : "→";
+  return `${bucketLabel(movement.from, locationName, lang)} ${arrow} ${bucketLabel(movement.to, locationName, lang)}`;
 }
 
 export function formatReference(reference: MovementDto["reference"]): string {
@@ -80,21 +88,32 @@ export function formatQuantity(quantity: number | string): string {
   return n % 1 === 0 ? String(n) : String(Number(n.toFixed(3)));
 }
 
-const dubaiTime = new Intl.DateTimeFormat("en-AE", {
-  timeZone: "Asia/Dubai",
-  day: "2-digit",
-  month: "short",
-  year: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
+const dubaiTimeFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function dubaiTimeFormatter(lang: Lang): Intl.DateTimeFormat {
+  // ar-AE for Arabic UI; both locales keep Gregorian storage (see docs §1).
+  const locale = lang === "ar" ? "ar-AE" : "en-AE";
+  let f = dubaiTimeFormatters.get(locale);
+  if (!f) {
+    f = new Intl.DateTimeFormat(locale, {
+      timeZone: "Asia/Dubai",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    dubaiTimeFormatters.set(locale, f);
+  }
+  return f;
+}
 
 /** Format an ISO timestamp in the tenant's default timezone (Asia/Dubai). */
-export function formatDubaiTime(iso: string): string {
+export function formatDubaiTime(iso: string, lang: Lang = "en"): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return dubaiTime.format(d);
+  return dubaiTimeFormatter(lang).format(d);
 }
 
 export function presentMovement(
@@ -103,18 +122,19 @@ export function presentMovement(
     locationName: (id: string) => string | undefined;
     sku?: (variantId: string) => string | undefined;
   },
+  lang: Lang = "en",
 ): PresentedMovement {
   return {
     id: movement.id,
     seq: movement.seq,
-    time: formatDubaiTime(movement.occurredAt),
-    typeLabel: movementTypeLabel(movement.movementType),
+    time: formatDubaiTime(movement.occurredAt, lang),
+    typeLabel: movementTypeLabel(movement.movementType, lang),
     tone: movementTone(movement.movementType),
     sku: lookups.sku?.(movement.variantId) ?? shortId(movement.variantId),
     quantity: formatQuantity(movement.quantity),
-    fromLabel: bucketLabel(movement.from, lookups.locationName),
-    toLabel: bucketLabel(movement.to, lookups.locationName),
-    flow: flowLabel(movement, lookups.locationName),
+    fromLabel: bucketLabel(movement.from, lookups.locationName, lang),
+    toLabel: bucketLabel(movement.to, lookups.locationName, lang),
+    flow: flowLabel(movement, lookups.locationName, lang),
     actor: shortId(movement.actorUserId),
     reference: formatReference(movement.reference),
     note: movement.note ?? "",

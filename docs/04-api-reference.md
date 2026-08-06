@@ -111,8 +111,16 @@ the variant's warranty months.
 | --- | --- |
 | POST `/v1/wms/zones` · `/v1/wms/bins` · `/v1/wms/bins/:id/assign` | layout + variant→bin directory |
 | GET `/v1/wms/locations/:id/layout` | zones→bins→skus |
-| POST `/v1/wms/pick-lists` | `{orderId}` → walking-order lines with bin paths |
-| PUT `/v1/wms/pick-lists/:id/picks` · POST `.../complete` | record picks / complete (short picks → 422) |
+| POST `/v1/wms/pick-lists` | `{orderId}` → walking-order lines, preferring bins that hold stock |
+| PUT `/v1/wms/pick-lists/:id/picks` · POST `.../complete` | record picks (debits the suggested bin) / complete (short picks → 422) |
+| POST `/v1/wms/putaway` | `{binId,variantId,quantity}` — coverage-checked against on-hand (422 `EXCEEDS_ON_HAND`) |
+| POST `/v1/wms/bin-moves` | `{fromBinId,toBinId,variantId,quantity}` — same location only (422 `INSUFFICIENT_BIN_QTY`, 400 `CROSS_LOCATION`) |
+| GET `/v1/wms/bins/:id/contents` | what's physically in a bin |
+| GET `/v1/wms/locations/:id/placement/:variantId` | `{onHand, binned, unbinned, bins[]}` — where a variant actually sits |
+
+Bin quantities are a **placement overlay**: the movement ledger and `stock_level`
+remain the location-level source of truth, and `sum(bin_stock) ≤ on_hand` is the
+invariant (unbinned stock is implicit floor stock).
 
 ## Shipping
 

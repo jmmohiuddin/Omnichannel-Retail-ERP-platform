@@ -2,41 +2,44 @@ import { useMemo, useState, type FormEvent } from "react";
 import { getPnl, getTrialBalance } from "../lib/api.js";
 import { defaultPnlRange, pnlQuery, type PnlRange } from "../lib/finance.js";
 import { formatMinor } from "../lib/money.js";
-import { humanState } from "../lib/movements.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useT } from "../lib/useT.js";
 
 function TrialBalanceCard() {
+  const { t, tEnum } = useT();
   const { data: tb, error, loading } = useAsync(getTrialBalance, []);
 
   return (
     <section className="card">
       <div className="page-head">
-        <h2 style={{ marginBlockEnd: 0 }}>Trial balance</h2>
+        <h2 style={{ marginBlockEnd: 0 }}>{t("finance.trialBalance")}</h2>
         {tb &&
           (tb.netMinor === 0 ? (
-            <span className="badge in">Balanced ✓</span>
+            <span className="badge in">{t("finance.balanced")}</span>
           ) : (
-            <span className="badge out">Out of balance by {formatMinor(tb.netMinor)}</span>
+            <span className="badge out">
+              {t("finance.outOfBalance", { amount: formatMinor(tb.netMinor) })}
+            </span>
           ))}
       </div>
 
-      {error && <div className="error-banner">Failed to load trial balance: {error}</div>}
+      {error && <div className="error-banner">{t("finance.tbFailed", { error })}</div>}
       {loading ? (
-        <p className="empty">Loading trial balance…</p>
+        <p className="empty">{t("finance.tbLoading")}</p>
       ) : tb && tb.rows.length === 0 ? (
-        <p className="empty">No ledger accounts yet.</p>
+        <p className="empty">{t("finance.noAccounts")}</p>
       ) : (
         tb && (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Code</th>
-                  <th>Account</th>
-                  <th>Kind</th>
-                  <th className="num">Debit</th>
-                  <th className="num">Credit</th>
-                  <th className="num">Balance</th>
+                  <th>{t("th.code")}</th>
+                  <th>{t("th.account")}</th>
+                  <th>{t("th.kind")}</th>
+                  <th className="num">{t("th.debit")}</th>
+                  <th className="num">{t("th.credit")}</th>
+                  <th className="num">{t("th.balance")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -45,7 +48,7 @@ function TrialBalanceCard() {
                     <td className="mono">{row.code}</td>
                     <td>{row.name}</td>
                     <td>
-                      <span className="badge neutral">{humanState(row.kind)}</span>
+                      <span className="badge neutral">{tEnum("acct", row.kind)}</span>
                     </td>
                     <td className="num">{formatMinor(row.debitMinor)}</td>
                     <td className="num">{formatMinor(row.creditMinor)}</td>
@@ -56,7 +59,7 @@ function TrialBalanceCard() {
               <tfoot>
                 <tr>
                   <td colSpan={3} style={{ fontWeight: 650 }}>
-                    Totals
+                    {t("finance.totals")}
                   </td>
                   <td className="num" style={{ fontWeight: 650 }}>
                     {formatMinor(tb.totalDebitMinor)}
@@ -78,6 +81,7 @@ function TrialBalanceCard() {
 }
 
 function PnlCard() {
+  const { t } = useT();
   const [range, setRange] = useState<PnlRange>(() => defaultPnlRange());
   const [applied, setApplied] = useState<PnlRange>(range);
   const query = useMemo(() => pnlQuery(applied), [applied]);
@@ -87,7 +91,7 @@ function PnlCard() {
     error,
     loading,
   } = useAsync(async () => {
-    if (!query) throw new Error("Pick a valid date range (from must not be after to).");
+    if (!query) throw new Error(t("finance.invalidRange"));
     return getPnl(query);
   }, [query]);
 
@@ -98,11 +102,11 @@ function PnlCard() {
 
   return (
     <section className="card">
-      <h2>Profit &amp; loss</h2>
+      <h2>{t("finance.pnl")}</h2>
 
       <form className="panel" onSubmit={onSubmit}>
         <div className="field">
-          <label htmlFor="pnl-from">From</label>
+          <label htmlFor="pnl-from">{t("finance.from")}</label>
           <input
             id="pnl-from"
             type="date"
@@ -112,7 +116,7 @@ function PnlCard() {
           />
         </div>
         <div className="field">
-          <label htmlFor="pnl-to">To</label>
+          <label htmlFor="pnl-to">{t("finance.to")}</label>
           <input
             id="pnl-to"
             type="date"
@@ -122,7 +126,7 @@ function PnlCard() {
           />
         </div>
         <button type="submit" className="secondary">
-          Apply
+          {t("common.apply")}
         </button>
       </form>
 
@@ -132,29 +136,29 @@ function PnlCard() {
         </div>
       )}
       {loading ? (
-        <p className="empty">Loading P&amp;L…</p>
+        <p className="empty">{t("finance.pnlLoading")}</p>
       ) : (
         pnl && (
           <>
             <div className="stat-grid" style={{ marginBlockStart: "var(--space-4)" }}>
               <div className="stat">
-                <div className="label">Gross revenue</div>
+                <div className="label">{t("finance.grossRevenue")}</div>
                 <div className="value">{formatMinor(pnl.grossRevenueMinor)}</div>
               </div>
               <div className="stat">
-                <div className="label">Refunds</div>
+                <div className="label">{t("finance.refunds")}</div>
                 <div className="value">{formatMinor(pnl.refundsMinor)}</div>
               </div>
               <div className="stat">
-                <div className="label">Net revenue</div>
+                <div className="label">{t("finance.netRevenue")}</div>
                 <div className="value">{formatMinor(pnl.netRevenueMinor)}</div>
               </div>
               <div className="stat">
-                <div className="label">Cost of sales</div>
+                <div className="label">{t("finance.costOfSales")}</div>
                 <div className="value">{formatMinor(pnl.costOfSalesMinor)}</div>
               </div>
               <div className="stat">
-                <div className="label">VAT collected</div>
+                <div className="label">{t("finance.vatCollected")}</div>
                 <div className="value">{formatMinor(pnl.vatCollectedMinor)}</div>
               </div>
             </div>
@@ -169,11 +173,12 @@ function PnlCard() {
 }
 
 export function FinancePage() {
+  const { t } = useT();
   return (
     <>
       <div className="page-head">
-        <h1>Finance</h1>
-        <span className="subtle">All amounts in AED</span>
+        <h1>{t("nav.finance")}</h1>
+        <span className="subtle">{t("finance.allAmountsAed")}</span>
       </div>
       <div className="stack">
         <TrialBalanceCard />

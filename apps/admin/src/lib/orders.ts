@@ -3,6 +3,7 @@
  * visibility, error mapping. Pure functions, no I/O.
  */
 import { ApiError, type OrderStatus } from "./api.js";
+import { t, type Lang } from "./i18n.js";
 import type { BadgeTone } from "./movements.js";
 
 export const ORDER_STATUS_FILTERS = [
@@ -44,9 +45,9 @@ export function orderStatusTone(status: string): BadgeTone {
  * 409 UNIT_REQUIRED means serialized units still need to be scanned at the
  * warehouse before the order can ship — surface that instead of the raw code.
  */
-export function fulfillErrorMessage(err: unknown): string {
+export function fulfillErrorMessage(err: unknown, lang: Lang = "en"): string {
   if (err instanceof ApiError && err.status === 409 && err.code === "UNIT_REQUIRED") {
-    return "Serialized units must be scanned at the warehouse before this order can be fulfilled.";
+    return t(lang, "orders.unitRequired");
   }
-  return err instanceof Error ? err.message : "Fulfilment failed";
+  return err instanceof Error ? err.message : t(lang, "orders.fulfillFailed");
 }

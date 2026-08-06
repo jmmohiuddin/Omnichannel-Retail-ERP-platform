@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link, useOutletContext, useParams } from "react-router-dom";
 import type { StoreContext } from "../App.js";
+import { t } from "../lib/i18n.js";
 import { formatMinor } from "../lib/money.js";
 import { useCart } from "../lib/useCart.js";
+import { useLang } from "../lib/useLang.js";
 
 export function ProductPage() {
   const { slug, catalog } = useOutletContext<StoreContext>();
   const { productSlug = "" } = useParams();
+  const { lang } = useLang();
   const cart = useCart(slug);
 
   const product = catalog.items.find((item) => item.slug === productSlug);
@@ -28,10 +31,10 @@ export function ProductPage() {
   if (!product) {
     return (
       <section className="empty-state">
-        <h1>Product not found</h1>
+        <h1>{t(lang, "product.notFoundTitle")}</h1>
         <p>
-          This product may no longer be available.{" "}
-          <Link to={`/${slug}`}>Back to the shop</Link>
+          {t(lang, "product.notFoundBody")}{" "}
+          <Link to={`/${slug}`}>{t(lang, "product.backToShop")}</Link>
         </p>
       </section>
     );
@@ -59,8 +62,9 @@ export function ProductPage() {
 
   return (
     <>
-      <nav className="breadcrumb" aria-label="Breadcrumb">
-        <Link to={`/${slug}`}>Shop</Link> <span aria-hidden="true">/</span> {product.name}
+      <nav className="breadcrumb" aria-label={t(lang, "product.breadcrumbLabel")}>
+        <Link to={`/${slug}`}>{t(lang, "layout.shop")}</Link> <span aria-hidden="true">/</span>{" "}
+        {product.name}
       </nav>
 
       <article className="product-detail">
@@ -72,12 +76,12 @@ export function ProductPage() {
           {product.description && <p className="product-desc">{product.description}</p>}
 
           {product.variants.length === 0 ? (
-            <p className="status-note">This product is not currently orderable.</p>
+            <p className="status-note">{t(lang, "product.notOrderable")}</p>
           ) : (
             <>
               {product.variants.length > 1 && (
                 <fieldset className="variant-picker">
-                  <legend>Choose an option</legend>
+                  <legend>{t(lang, "product.chooseOption")}</legend>
                   {product.variants.map((v) => (
                     <label key={v.id} className={`variant-option${v.id === variantId ? " selected" : ""}`}>
                       <input
@@ -94,7 +98,7 @@ export function ProductPage() {
                       <span className="variant-sku">{v.sku}</span>
                       <span className="variant-price">{formatMinor(v.priceMinor, v.currency)}</span>
                       <span className={v.available > 0 ? "badge badge-in" : "badge badge-out"}>
-                        {v.available > 0 ? "In stock" : "Out of stock"}
+                        {v.available > 0 ? t(lang, "catalog.inStock") : t(lang, "catalog.outOfStock")}
                       </span>
                     </label>
                   ))}
@@ -106,16 +110,16 @@ export function ProductPage() {
                   <div className="product-meta">
                     <span className="price price-lg">{formatMinor(variant.priceMinor, variant.currency)}</span>
                     <span className={available ? "badge badge-in" : "badge badge-out"}>
-                      {available ? "In stock" : "Out of stock"}
+                      {available ? t(lang, "catalog.inStock") : t(lang, "catalog.outOfStock")}
                     </span>
                   </div>
-                  <p className="vat-note">Price includes 5% VAT.</p>
+                  <p className="vat-note">{t(lang, "product.vatNote")}</p>
                   {product.variants.length === 1 && (
-                    <p className="variant-sku">SKU {variant.sku}</p>
+                    <p className="variant-sku">{t(lang, "product.sku", { sku: variant.sku })}</p>
                   )}
 
                   <div className="add-row">
-                    <label htmlFor="qty">Qty</label>
+                    <label htmlFor="qty">{t(lang, "product.qty")}</label>
                     <input
                       id="qty"
                       type="number"
@@ -129,12 +133,13 @@ export function ProductPage() {
                       disabled={!available}
                     />
                     <button type="button" className="primary" onClick={addToCart} disabled={!available}>
-                      {available ? "Add to cart" : "Out of stock"}
+                      {available ? t(lang, "product.addToCart") : t(lang, "catalog.outOfStock")}
                     </button>
                   </div>
                   {added && (
                     <p className="status-note success" role="status">
-                      Added to cart. <Link to={`/${slug}/cart`}>View cart</Link>
+                      {t(lang, "product.added")}{" "}
+                      <Link to={`/${slug}/cart`}>{t(lang, "product.viewCart")}</Link>
                     </p>
                   )}
                 </>

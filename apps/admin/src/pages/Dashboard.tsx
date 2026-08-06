@@ -10,6 +10,7 @@ import {
 } from "../lib/api.js";
 import { presentMovement } from "../lib/movements.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useT } from "../lib/useT.js";
 
 interface DashboardData {
   locations: LocationDto[];
@@ -33,10 +34,11 @@ async function loadDashboard(): Promise<DashboardData> {
 }
 
 export function DashboardPage() {
+  const { t, lang } = useT();
   const { data, error, loading } = useAsync(loadDashboard, []);
 
-  if (loading) return <p className="empty">Loading dashboard…</p>;
-  if (error) return <div className="error-banner">Failed to load dashboard: {error}</div>;
+  if (loading) return <p className="empty">{t("dashboard.loading")}</p>;
+  if (error) return <div className="error-banner">{t("dashboard.loadFailed", { error })}</div>;
   if (!data) return null;
 
   const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
@@ -50,62 +52,67 @@ export function DashboardPage() {
   return (
     <>
       <div className="page-head">
-        <h1>Dashboard</h1>
-        <span className="subtle">Times shown in Asia/Dubai</span>
+        <h1>{t("nav.dashboard")}</h1>
+        <span className="subtle">{t("common.timesInDubai")}</span>
       </div>
 
       <div className="stat-grid">
         <div className="card stat">
-          <div className="label">Locations</div>
+          <div className="label">{t("dashboard.locations")}</div>
           <div className="value">{data.locations.length}</div>
           <div className="hint">
-            <Link to="/inventory">Manage inventory</Link>
+            <Link to="/inventory">{t("dashboard.manageInventory")}</Link>
           </div>
         </div>
         <div className="card stat">
-          <div className="label">Products</div>
+          <div className="label">{t("dashboard.products")}</div>
           <div className="value">{data.products.length}</div>
           <div className="hint">
-            <Link to="/catalog">Open catalog</Link>
+            <Link to="/catalog">{t("dashboard.openCatalog")}</Link>
           </div>
         </div>
         <div className="card stat">
-          <div className="label">Units on hand</div>
+          <div className="label">{t("dashboard.unitsOnHand")}</div>
+          {/* Western numerals in both languages, per UAE retail convention. */}
           <div className="value">{data.onHandUnits.toLocaleString("en-AE")}</div>
-          <div className="hint">Across all locations</div>
+          <div className="hint">{t("dashboard.acrossLocations")}</div>
         </div>
         <div className="card stat">
-          <div className="label">Movements (24h)</div>
+          <div className="label">{t("dashboard.movements24h")}</div>
           <div className="value">{last24h}</div>
           <div className="hint">
-            <Link to="/audit">Full audit trail</Link>
+            <Link to="/audit">{t("dashboard.fullAudit")}</Link>
           </div>
         </div>
       </div>
 
       <section className="card">
-        <h2>Recent movements</h2>
+        <h2>{t("dashboard.recentMovements")}</h2>
         {recent.length === 0 ? (
-          <p className="empty">No stock movements yet.</p>
+          <p className="empty">{t("dashboard.noMovements")}</p>
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th className="num">Seq</th>
-                  <th>Time</th>
-                  <th>Type</th>
-                  <th>SKU</th>
-                  <th className="num">Qty</th>
-                  <th>From → To</th>
+                  <th className="num">{t("th.seq")}</th>
+                  <th>{t("th.time")}</th>
+                  <th>{t("th.type")}</th>
+                  <th>{t("th.sku")}</th>
+                  <th className="num">{t("th.qty")}</th>
+                  <th>{t("th.flow")}</th>
                 </tr>
               </thead>
               <tbody>
                 {recent.map((m) => {
-                  const row = presentMovement(m, {
-                    locationName,
-                    sku: (id) => skuOf.get(id),
-                  });
+                  const row = presentMovement(
+                    m,
+                    {
+                      locationName,
+                      sku: (id) => skuOf.get(id),
+                    },
+                    lang,
+                  );
                   return (
                     <tr key={row.id}>
                       <td className="num mono">{row.seq}</td>

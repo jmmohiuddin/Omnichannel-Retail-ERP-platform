@@ -9,6 +9,7 @@ import {
 } from "../lib/api.js";
 import { presentMovement } from "../lib/movements.js";
 import { useAsync } from "../lib/useAsync.js";
+import { useT } from "../lib/useT.js";
 
 const PAGE_SIZE = 100;
 
@@ -18,6 +19,7 @@ interface Lookups {
 }
 
 export function AuditPage() {
+  const { t, lang } = useT();
   const { data: lookups, error: lookupError } = useAsync<Lookups>(async () => {
     const [locations, products] = await Promise.all([listLocations(), listProducts()]);
     const skuOf = new Map<string, string>();
@@ -31,23 +33,26 @@ export function AuditPage() {
   const [error, setError] = useState<string | null>(null);
   const seen = useRef(new Set<number>());
 
-  const loadPage = useCallback(async (afterSeq: number) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const feed = await listMovements(afterSeq, PAGE_SIZE);
-      setItems((prev) => {
-        const fresh = feed.items.filter((m) => !seen.current.has(m.seq));
-        for (const m of fresh) seen.current.add(m.seq);
-        return [...prev, ...fresh];
-      });
-      setCursor(feed.nextCursor ?? null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load ledger");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const loadPage = useCallback(
+    async (afterSeq: number) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const feed = await listMovements(afterSeq, PAGE_SIZE);
+        setItems((prev) => {
+          const fresh = feed.items.filter((m) => !seen.current.has(m.seq));
+          for (const m of fresh) seen.current.add(m.seq);
+          return [...prev, ...fresh];
+        });
+        setCursor(feed.nextCursor ?? null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t("audit.ledgerFailed"));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [t],
+  );
 
   const initialised = useRef(false);
   useEffect(() => {
@@ -62,40 +67,38 @@ export function AuditPage() {
     const sku = (id: string) => lookups?.skuOf.get(id);
     return [...items]
       .sort((a, b) => b.seq - a.seq)
-      .map((m) => ({ movement: m, row: presentMovement(m, { locationName, sku }) }));
-  }, [items, lookups]);
+      .map((m) => ({ movement: m, row: presentMovement(m, { locationName, sku }, lang) }));
+  }, [items, lookups, lang]);
 
   return (
     <>
       <div className="page-head">
-        <h1>Audit trail</h1>
-        <span className="subtle">
-          Append-only stock ledger · {items.length} entries loaded · times in Asia/Dubai
-        </span>
+        <h1>{t("audit.title")}</h1>
+        <span className="subtle">{t("audit.summary", { count: items.length })}</span>
       </div>
 
       {lookupError && (
-        <div className="error-banner">Failed to load reference data: {lookupError}</div>
+        <div className="error-banner">{t("audit.refFailed", { error: lookupError })}</div>
       )}
       {error && <div className="error-banner">{error}</div>}
 
       <section className="card">
         {rows.length === 0 && !loading ? (
-          <p className="empty">The ledger is empty.</p>
+          <p className="empty">{t("audit.empty")}</p>
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th className="num">Seq</th>
-                  <th>Time (Dubai)</th>
-                  <th>Type</th>
-                  <th>SKU</th>
-                  <th className="num">Qty</th>
-                  <th>From → To</th>
-                  <th>Actor</th>
-                  <th>Reference</th>
-                  <th>Note</th>
+                  <th className="num">{t("th.seq")}</th>
+                  <th>{t("th.timeDubai")}</th>
+                  <th>{t("th.type")}</th>
+                  <th>{t("th.sku")}</th>
+                  <th className="num">{t("th.qty")}</th>
+                  <th>{t("th.flow")}</th>
+                  <th>{t("th.actor")}</th>
+                  <th>{t("th.reference")}</th>
+                  <th>{t("th.note")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -131,10 +134,10 @@ export function AuditPage() {
               disabled={loading}
               onClick={() => void loadPage(cursor)}
             >
-              {loading ? "Loading…" : "Load more"}
+              {loading ? t("common.loading") : t("common.loadMore")}
             </button>
           ) : (
-            rows.length > 0 && <span className="faint">End of ledger.</span>
+            rows.length > 0 && <span className="faint">{t("audit.endOfLedger")}</span>
           )}
         </div>
       </section>

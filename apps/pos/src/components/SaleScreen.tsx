@@ -21,12 +21,14 @@ import {
 } from "../lib/api.js";
 import { cartReducer, cartTotals, hasStockUnit, lineTotalMinor, type CartLine } from "../lib/cart.js";
 import { customerPanelReducer, initialCustomerPanelState } from "../lib/customer.js";
+import { unitStateLabel, type MessageKey, type MessageParams } from "../lib/i18n.js";
 import { formatMinor } from "../lib/money.js";
 import { loyaltyApplicableMinor, planPayments } from "../lib/payments.js";
 import type { SaleQueue } from "../lib/saleQueue.js";
 import { isImeiToken } from "../lib/scan.js";
 import type { StoredLocation } from "../lib/session.js";
 import { CustomerPanel } from "./CustomerPanel.js";
+import { LangToggle, useLang } from "./LangProvider.js";
 import { ReceiptModal, type CompletedSale } from "./ReceiptModal.js";
 
 interface Props {
@@ -40,24 +42,37 @@ interface Props {
 
 const SEARCH_DEBOUNCE_MS = 250;
 
+/**
+ * Notices/errors are stored as message keys (+ params) — not rendered strings
+ * — so an on-screen message re-renders in the other language when the cashier
+ * flips the toggle. Server-authored text is carried verbatim as `text`.
+ */
+type Notice = { key: MessageKey; params?: MessageParams } | { text: string };
+
 export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSignOut }: Props) {
+  const { t, lang } = useLang();
   const [cart, dispatch] = useReducer(cartReducer, []);
   const totals = cartTotals(cart);
   const currency = cart[0]?.currency ?? "AED";
 
   const [barcode, setBarcode] = useState("");
   const [barcodeMiss, setBarcodeMiss] = useState<string | null>(null);
-  const [scanNotice, setScanNotice] = useState<string | null>(null);
+  const [scanNotice, setScanNotice] = useState<Notice | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ProductSummary[]>([]);
   const [searching, setSearching] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [tendering, setTendering] = useState<TenderMethod | null>(null);
-  const [saleError, setSaleError] = useState<string | null>(null);
+  const [saleError, setSaleError] = useState<Notice | null>(null);
   const [completed, setCompleted] = useState<CompletedSale | null>(null);
 
   const [customer, customerDispatch] = useReducer(customerPanelReducer, initialCustomerPanelState);
   const attachedCustomer = customer.attached;
+
+  const renderNotice = useCallback(
+    (notice: Notice) => ("text" in notice ? notice.text : t(notice.key, notice.params)),
+    [t],
+  );
 
   const barcodeRef = useRef<HTMLInputElement>(null);
   const focusScan = useCallback(() => barcodeRef.current?.focus(), []);
@@ -115,6 +130,8 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
    * Scan entry — scanners type the code and send Enter. An IMEI-shaped token
    * (15–16 digits, Luhn-valid) is looked up as a serialized stock unit first;
    * a 404 there falls through to the normal barcode/SKU lookup.
+   * Scanners emit Western (ASCII) digits and the routing/Luhn logic only ever
+   * sees the raw token — language never affects barcode/IMEI handling.
    */
   const handleScan = useCallback(
     async (e: FormEvent) => {
@@ -127,12 +144,12 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
         try {
           const unit = await api.getStockUnitByImei(code);
           if (unit.state !== "in_stock") {
-            setScanNotice(`Unit is ${unit.state.replace(/_/g, " ")} — it cannot be sold.`);
+            setScanNotice({ key: "scan.unitState", params: { state: unitStateLabel(lang, unit.state) } });
             setBarcode("");
             return;
           }
           if (hasStockUnit(cart, unit.id)) {
-            setScanNotice("Unit already in cart.");
+            setScanNotice({ key: "scan.unitAlreadyInCart" });
             setBarcode("");
             return;
           }
@@ -152,7 +169,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
           return;
         } catch (err) {
           if (!(err instanceof ApiError && err.status === 404)) {
-            setScanNotice("Unit lookup failed — check the connection and rescan.");
+            setScanNotice({ key: "scan.lookupFailed" });
             return;
           }
           // 404: no unit carries this IMEI — fall through to product lookup.
@@ -173,7 +190,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
         setBarcodeMiss(code);
       }
     },
-    [api, barcode, cart, addVariant],
+    [api, barcode, cart, addVariant, lang],
   );
 
   const handleResultKeyDown = useCallback(
@@ -231,16 +248,24 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
         setCompleted({ mode: "online", sale: outcome.result, receipt, lines: linesSnapshot, payments });
       } catch (err) {
         if (err instanceof ApiError) {
-          // Surface the server's own message (SERIALIZED_REQUIRED,
-          // INSUFFICIENT_POINTS, …) when it sent one.
-          setSaleError(
-            apiErrorMessage(err, `Sale rejected by the server (HTTP ${err.status}). Nothing was charged.`),
-          );
-          if (apiErrorCode(err) === "INSUFFICIENT_POINTS") void refreshLoyalty();
+          if (apiErrorCode(err) === "INSUFFICIENT_POINTS") {
+            // Known code — show it in the cashier's language and refresh.
+            setSaleError({ key: "sale.insufficientPoints" });
+            void refreshLoyalty();
+          } else {
+            // Surface the server's own message (SERIALIZED_REQUIRED, …) when
+            // it sent one; otherwise a localized generic rejection.
+            const serverMessage = apiErrorMessage(err, "");
+            setSaleError(
+              serverMessage.length > 0
+                ? { text: serverMessage }
+                : { key: "sale.rejected", params: { status: err.status } },
+            );
+          }
         } else if (isNetworkError(err)) {
-          setSaleError("Network error — the sale was not submitted.");
+          setSaleError({ key: "sale.network" });
         } else {
-          setSaleError("Sale failed unexpectedly.");
+          setSaleError({ key: "sale.failedUnexpected" });
         }
       } finally {
         setTendering(null);
@@ -278,41 +303,48 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
         </span>
         <span className="topbar-spacer" />
         {pendingCount > 0 && (
-          <span className="badge badge-pending" title="Sales saved offline, waiting to sync">
-            {pendingCount} pending sync
+          <span className="badge badge-pending" title={t("topbar.pendingSyncTitle")}>
+            {t("topbar.pendingSync", { count: pendingCount })}
           </span>
         )}
+        <LangToggle />
         <button type="button" className="btn btn-ghost btn-small" onClick={onSignOut}>
-          Sign out
+          {t("common.signOut")}
         </button>
       </header>
 
       <div className="pos-body">
-        <section className="pos-left" aria-label="Product search">
+        <section className="pos-left" aria-label={t("search.sectionAria")}>
           <form className="scan-form" onSubmit={handleScan}>
+            {/*
+             * dir="ltr": barcodes/IMEIs are Western-digit codes and must render
+             * left-to-right even in the Arabic UI; input is passed through
+             * unmodified regardless of language.
+             */}
             <input
               ref={barcodeRef}
               className="scan-input"
+              dir="ltr"
               value={barcode}
               onChange={(e) => {
                 setBarcode(e.target.value);
                 setBarcodeMiss(null);
               }}
-              placeholder="Scan barcode or type SKU, then Enter"
+              placeholder={t("scan.placeholder")}
               autoFocus
               inputMode="text"
               autoComplete="off"
-              aria-label="Barcode"
+              aria-label={t("scan.barcodeAria")}
             />
           </form>
           {barcodeMiss && (
             <p className="error-text" role="alert">
-              No product matches “{barcodeMiss}”.
+              {t("scan.noMatch", { code: barcodeMiss })}
             </p>
           )}
           {scanNotice && (
             <p className="warn-text" role="alert">
-              {scanNotice}
+              {renderNotice(scanNotice)}
             </p>
           )}
 
@@ -320,15 +352,15 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
             className="search-input"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search products by name…"
+            placeholder={t("search.placeholder")}
             autoComplete="off"
-            aria-label="Product search"
+            aria-label={t("search.sectionAria")}
           />
 
-          <div className="search-results" role="listbox" aria-label="Search results">
-            {searching && <p className="muted result-hint">Searching…</p>}
+          <div className="search-results" role="listbox" aria-label={t("search.resultsAria")}>
+            {searching && <p className="muted result-hint">{t("search.searching")}</p>}
             {!searching && query.trim().length > 0 && results.length === 0 && (
-              <p className="muted result-hint">No products found.</p>
+              <p className="muted result-hint">{t("search.noProducts")}</p>
             )}
             {results.flatMap((product) =>
               product.variants.map((variant) => (
@@ -350,22 +382,24 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
           </div>
         </section>
 
-        <section className="pos-right" aria-label="Cart">
+        <section className="pos-right" aria-label={t("cart.sectionAria")}>
           <div className="cart-lines">
-            {cart.length === 0 && <p className="muted cart-empty">Cart is empty — scan an item to start.</p>}
+            {cart.length === 0 && <p className="muted cart-empty">{t("cart.empty")}</p>}
             {cart.map((line) => (
               <div className="cart-line" key={line.stockUnitId ?? line.variantId}>
                 <div className="cart-line-main">
                   <span className="cart-line-name">{line.name}</span>
                   {line.imei !== undefined && (
-                    <span className="muted mono cart-line-imei">IMEI {line.imei}</span>
+                    <span className="muted mono cart-line-imei">{t("cart.imei", { imei: line.imei })}</span>
                   )}
-                  <span className="muted">{formatMinor(line.unitPriceMinor, line.currency)} each</span>
+                  <span className="muted">
+                    {t("cart.each", { price: formatMinor(line.unitPriceMinor, line.currency) })}
+                  </span>
                 </div>
                 {line.stockUnitId !== undefined ? (
                   /* Serialized unit — quantity is locked to exactly 1. */
                   <div className="qty-controls">
-                    <span className="qty mono" aria-label={`Quantity of ${line.name} (serialized)`}>
+                    <span className="qty mono" aria-label={t("cart.qtySerializedAria", { name: line.name })}>
                       1
                     </span>
                   </div>
@@ -374,7 +408,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
                     <button
                       type="button"
                       className="btn btn-qty"
-                      aria-label={`Decrease quantity of ${line.name}`}
+                      aria-label={t("cart.decreaseAria", { name: line.name })}
                       onClick={() => dispatch({ type: "decrement", variantId: line.variantId })}
                     >
                       −
@@ -383,7 +417,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
                     <button
                       type="button"
                       className="btn btn-qty"
-                      aria-label={`Increase quantity of ${line.name}`}
+                      aria-label={t("cart.increaseAria", { name: line.name })}
                       onClick={() => dispatch({ type: "increment", variantId: line.variantId })}
                     >
                       +
@@ -394,7 +428,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
                 <button
                   type="button"
                   className="btn btn-ghost btn-small"
-                  aria-label={`Remove ${line.name}`}
+                  aria-label={t("cart.removeAria", { name: line.name })}
                   onClick={() =>
                     dispatch({
                       type: "remove",
@@ -413,25 +447,25 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
 
           <dl className="totals">
             <div>
-              <dt>Subtotal (excl. VAT)</dt>
+              <dt>{t("totals.subtotal")}</dt>
               <dd className="mono">{formatMinor(totals.subtotalMinor, currency)}</dd>
             </div>
             <div>
-              <dt>VAT 5% (included)</dt>
+              <dt>{t("totals.vat")}</dt>
               <dd className="mono">{formatMinor(totals.taxMinor, currency)}</dd>
             </div>
             <div className="grand-total">
-              <dt>Total</dt>
+              <dt>{t("totals.total")}</dt>
               <dd className="mono">{formatMinor(totals.totalMinor, currency)}</dd>
             </div>
             {loyaltyAppliedMinor > 0 && (
               <>
                 <div>
-                  <dt>Loyalty points</dt>
+                  <dt>{t("totals.loyaltyPoints")}</dt>
                   <dd className="mono">−{formatMinor(loyaltyAppliedMinor, currency)}</dd>
                 </div>
                 <div>
-                  <dt>Remaining due</dt>
+                  <dt>{t("totals.remainingDue")}</dt>
                   <dd className="mono">{formatMinor(dueMinor, currency)}</dd>
                 </div>
               </>
@@ -440,7 +474,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
 
           {saleError && (
             <p className="error-text" role="alert">
-              {saleError}
+              {renderNotice(saleError)}
             </p>
           )}
 
@@ -454,8 +488,10 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
                 onClick={() => customerDispatch({ type: "toggle-loyalty" })}
               >
                 {customer.loyaltyApplied
-                  ? `LOYALTY APPLIED — ${dueMinor > 0 ? `${formatMinor(dueMinor, currency)} due by cash/card` : "fully covered"}`
-                  : "LOYALTY"}
+                  ? dueMinor > 0
+                    ? t("tender.loyaltyAppliedDue", { amount: formatMinor(dueMinor, currency) })
+                    : t("tender.loyaltyAppliedFull")
+                  : t("tender.loyalty")}
               </button>
             </div>
           )}
@@ -467,7 +503,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
               disabled={cart.length === 0 || tendering !== null}
               onClick={() => void tender("cash")}
             >
-              {tendering === "cash" ? "Processing…" : "CASH"}
+              {tendering === "cash" ? t("common.processing") : t("tender.cash")}
             </button>
             <button
               type="button"
@@ -475,7 +511,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
               disabled={cart.length === 0 || tendering !== null}
               onClick={() => void tender("card")}
             >
-              {tendering === "card" ? "Processing…" : "CARD"}
+              {tendering === "card" ? t("common.processing") : t("tender.card")}
             </button>
           </div>
         </section>

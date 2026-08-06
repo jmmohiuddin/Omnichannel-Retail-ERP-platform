@@ -15,7 +15,14 @@ function formatterFor(currency: string): Intl.NumberFormat {
   return f;
 }
 
-/** Format an integer minor-unit amount as an en-AE currency string. */
+/**
+ * Format an integer minor-unit amount as an en-AE currency string.
+ *
+ * Intentionally locale-fixed to en-AE for BOTH the English and Arabic UIs:
+ * UAE retail convention displays AED amounts with Western (Latin) numerals
+ * even in Arabic contexts (price tags, tax invoices, bank statements), so
+ * money never switches to Eastern Arabic digits when the app language is ar.
+ */
 export function formatMinor(minor: number, currency = "AED"): string {
   if (!Number.isFinite(minor)) return "—";
   return formatterFor(currency).format(minor / 100);

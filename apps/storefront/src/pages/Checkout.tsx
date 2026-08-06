@@ -4,8 +4,10 @@ import type { StoreContext } from "../App.js";
 import { ApiError, placeOrder, type OrderResult } from "../lib/api.js";
 import type { CartLine } from "../lib/cart.js";
 import { isCheckoutValid, toCustomerPayload, validateCheckout, type CheckoutErrors } from "../lib/checkout.js";
+import { t, type MessageKey } from "../lib/i18n.js";
 import { formatMinor, vatPortionMinor } from "../lib/money.js";
 import { useCart } from "../lib/useCart.js";
+import { useLang } from "../lib/useLang.js";
 
 interface Shortage {
   line: CartLine;
@@ -14,6 +16,7 @@ interface Shortage {
 
 export function CheckoutPage() {
   const { slug, catalog, reloadCatalog } = useOutletContext<StoreContext>();
+  const { lang } = useLang();
   const cart = useCart(slug);
   const navigate = useNavigate();
 
@@ -22,7 +25,8 @@ export function CheckoutPage() {
   const [phone, setPhone] = useState("");
   const [errors, setErrors] = useState<CheckoutErrors>({});
   const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  // Message key (not prose) so errors re-render in the active language.
+  const [submitErrorKey, setSubmitErrorKey] = useState<MessageKey | null>(null);
   const [shortages, setShortages] = useState<Shortage[] | null>(null);
 
   const currency = cart.lines[0]?.currency ?? catalog.tenant.currency;
@@ -30,9 +34,10 @@ export function CheckoutPage() {
   if (cart.lines.length === 0) {
     return (
       <section className="empty-state">
-        <h1>Nothing to check out</h1>
+        <h1>{t(lang, "checkout.emptyTitle")}</h1>
         <p>
-          Your cart is empty. <Link to={`/${slug}`}>Back to the shop</Link>
+          {t(lang, "checkout.emptyBody")}{" "}
+          <Link to={`/${slug}`}>{t(lang, "product.backToShop")}</Link>
         </p>
       </section>
     );
@@ -57,7 +62,7 @@ export function CheckoutPage() {
     if (!isCheckoutValid(validation)) return;
 
     setSubmitting(true);
-    setSubmitError(null);
+    setSubmitErrorKey(null);
     setShortages(null);
     try {
       const result: OrderResult = await placeOrder(slug, {
@@ -74,18 +79,16 @@ export function CheckoutPage() {
         try {
           const found = await findShortages();
           setShortages(found);
-          setSubmitError(
-            found.length > 0
-              ? "Some items in your cart are no longer available in the quantity requested:"
-              : "Stock changed while you were checking out. Please review your cart and try again.",
+          setSubmitErrorKey(
+            found.length > 0 ? "checkout.error.shortages" : "checkout.error.stockChanged",
           );
         } catch {
-          setSubmitError("Some items are out of stock. Please review your cart and try again.");
+          setSubmitErrorKey("checkout.error.someOutOfStock");
         }
       } else if (err instanceof ApiError && err.status === 404) {
-        setSubmitError("This store is no longer available.");
+        setSubmitErrorKey("checkout.error.storeGone");
       } else {
-        setSubmitError("We couldn't place your order. Please try again in a moment.");
+        setSubmitErrorKey("checkout.error.orderFailed");
       }
     } finally {
       setSubmitting(false);
@@ -94,13 +97,13 @@ export function CheckoutPage() {
 
   return (
     <>
-      <h1>Checkout</h1>
+      <h1>{t(lang, "checkout.title")}</h1>
       <div className="checkout-grid">
         <form className="checkout-form" onSubmit={onSubmit} noValidate>
-          <h2>Your details</h2>
+          <h2>{t(lang, "checkout.details")}</h2>
 
           <div className="field">
-            <label htmlFor="co-name">Full name *</label>
+            <label htmlFor="co-name">{t(lang, "checkout.name")}</label>
             <input
               id="co-name"
               type="text"
@@ -109,11 +112,11 @@ export function CheckoutPage() {
               onChange={(e) => setName(e.target.value)}
               aria-invalid={errors.name ? true : undefined}
             />
-            {errors.name && <p className="field-error">{errors.name}</p>}
+            {errors.name && <p className="field-error">{t(lang, errors.name)}</p>}
           </div>
 
           <div className="field">
-            <label htmlFor="co-email">Email</label>
+            <label htmlFor="co-email">{t(lang, "checkout.email")}</label>
             <input
               id="co-email"
               type="email"
@@ -122,11 +125,11 @@ export function CheckoutPage() {
               onChange={(e) => setEmail(e.target.value)}
               aria-invalid={errors.email ? true : undefined}
             />
-            {errors.email && <p className="field-error">{errors.email}</p>}
+            {errors.email && <p className="field-error">{t(lang, errors.email)}</p>}
           </div>
 
           <div className="field">
-            <label htmlFor="co-phone">Phone</label>
+            <label htmlFor="co-phone">{t(lang, "checkout.phone")}</label>
             <input
               id="co-phone"
               type="tel"
@@ -136,42 +139,48 @@ export function CheckoutPage() {
               onChange={(e) => setPhone(e.target.value)}
               aria-invalid={errors.phone ? true : undefined}
             />
-            {errors.phone && <p className="field-error">{errors.phone}</p>}
+            {errors.phone && <p className="field-error">{t(lang, errors.phone)}</p>}
           </div>
 
-          {errors.contact && <p className="field-error">{errors.contact}</p>}
+          {errors.contact && <p className="field-error">{t(lang, errors.contact)}</p>}
 
-          {submitError && (
+          {submitErrorKey && (
             <div className="alert" role="alert">
-              <p>{submitError}</p>
+              <p>{t(lang, submitErrorKey)}</p>
               {shortages && shortages.length > 0 && (
                 <ul>
                   {shortages.map(({ line, available }) => (
                     <li key={line.variantId}>
-                      {line.productName} (SKU {line.sku}) — requested {line.quantity},{" "}
-                      {available > 0 ? `only ${available} left` : "out of stock"}
+                      {t(
+                        lang,
+                        available > 0 ? "checkout.shortageOnlyLeft" : "checkout.shortageOutOfStock",
+                        {
+                          name: line.productName,
+                          sku: line.sku,
+                          requested: line.quantity,
+                          available,
+                        },
+                      )}
                     </li>
                   ))}
                 </ul>
               )}
               {shortages && (
                 <p>
-                  <Link to={`/${slug}/cart`}>Adjust your cart</Link> and try again.
+                  <Link to={`/${slug}/cart`}>{t(lang, "checkout.adjustCart")}</Link>
                 </p>
               )}
             </div>
           )}
 
           <button type="submit" className="primary" disabled={submitting}>
-            {submitting ? "Placing order…" : "Place order"}
+            {submitting ? t(lang, "checkout.placingOrder") : t(lang, "checkout.placeOrder")}
           </button>
-          <p className="vat-note">
-            No payment is taken now — you'll receive payment instructions after placing the order.
-          </p>
+          <p className="vat-note">{t(lang, "checkout.noPaymentNote")}</p>
         </form>
 
-        <aside className="order-summary" aria-label="Order summary">
-          <h2>Order summary</h2>
+        <aside className="order-summary" aria-label={t(lang, "checkout.summary")}>
+          <h2>{t(lang, "checkout.summary")}</h2>
           <ul className="summary-lines">
             {cart.lines.map((line) => (
               <li key={line.variantId}>
@@ -183,11 +192,13 @@ export function CheckoutPage() {
             ))}
           </ul>
           <div className="summary-row total">
-            <span>Total</span>
+            <span>{t(lang, "checkout.total")}</span>
             <span>{formatMinor(cart.totalMinor, currency)}</span>
           </div>
           <p className="vat-note">
-            Includes 5% VAT of approximately {formatMinor(vatPortionMinor(cart.totalMinor), currency)}.
+            {t(lang, "checkout.vatNote", {
+              amount: formatMinor(vatPortionMinor(cart.totalMinor), currency),
+            })}
           </p>
         </aside>
       </div>

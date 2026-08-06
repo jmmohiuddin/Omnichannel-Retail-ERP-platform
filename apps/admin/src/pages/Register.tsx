@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { registerTenant } from "../lib/auth.js";
+import { useT } from "../lib/useT.js";
 
 function slugify(name: string): string {
   return name
@@ -12,6 +13,7 @@ function slugify(name: string): string {
 
 export function RegisterPage() {
   const navigate = useNavigate();
+  const { t } = useT();
   const [tenantName, setTenantName] = useState("");
   const [slug, setSlug] = useState("");
   const [slugTouched, setSlugTouched] = useState(false);
@@ -40,7 +42,7 @@ export function RegisterPage() {
       });
       navigate("/", { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Registration failed");
+      setError(err instanceof Error ? err.message : t("register.failed"));
     } finally {
       setBusy(false);
     }
@@ -53,12 +55,12 @@ export function RegisterPage() {
           <div className="brand" style={{ fontWeight: 700, fontSize: 18 }}>
             OmniRetail <span style={{ color: "var(--color-primary)" }}>OS</span>
           </div>
-          <p className="subtle">Set up a new tenant</p>
+          <p className="subtle">{t("register.subtitle")}</p>
         </div>
         {error && <div className="error-banner">{error}</div>}
         <form onSubmit={onSubmit}>
           <div className="field">
-            <label htmlFor="reg-tenant">Business name</label>
+            <label htmlFor="reg-tenant">{t("register.businessName")}</label>
             <input
               id="reg-tenant"
               value={tenantName}
@@ -69,7 +71,7 @@ export function RegisterPage() {
             />
           </div>
           <div className="field">
-            <label htmlFor="reg-slug">Tenant slug</label>
+            <label htmlFor="reg-slug">{t("login.slug")}</label>
             <input
               id="reg-slug"
               value={slug}
@@ -78,13 +80,13 @@ export function RegisterPage() {
                 setSlug(e.target.value);
               }}
               pattern="[a-z0-9-]{2,40}"
-              title="Lowercase letters, digits and hyphens (2–40 chars)"
+              title={t("register.slugPattern")}
               required
             />
-            <span className="faint">Used to sign in: lowercase letters, digits, hyphens.</span>
+            <span className="faint">{t("register.slugHint")}</span>
           </div>
           <div className="field">
-            <label htmlFor="reg-name">Your full name</label>
+            <label htmlFor="reg-name">{t("register.fullName")}</label>
             <input
               id="reg-name"
               value={fullName}
@@ -94,7 +96,7 @@ export function RegisterPage() {
             />
           </div>
           <div className="field">
-            <label htmlFor="reg-email">Email</label>
+            <label htmlFor="reg-email">{t("login.email")}</label>
             <input
               id="reg-email"
               type="email"
@@ -105,7 +107,7 @@ export function RegisterPage() {
             />
           </div>
           <div className="field">
-            <label htmlFor="reg-password">Password</label>
+            <label htmlFor="reg-password">{t("login.password")}</label>
             <input
               id="reg-password"
               type="password"
@@ -115,14 +117,14 @@ export function RegisterPage() {
               minLength={10}
               required
             />
-            <span className="faint">At least 10 characters.</span>
+            <span className="faint">{t("register.passwordHint")}</span>
           </div>
           <button type="submit" disabled={busy}>
-            {busy ? "Creating tenant…" : "Create tenant"}
+            {busy ? t("register.submitting") : t("register.submit")}
           </button>
         </form>
         <p className="subtle">
-          Already registered? <Link to="/login">Sign in</Link>
+          {t("register.already")} <Link to="/login">{t("login.submit")}</Link>
         </p>
       </div>
     </div>
