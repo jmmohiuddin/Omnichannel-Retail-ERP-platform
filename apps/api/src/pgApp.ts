@@ -33,6 +33,8 @@ import { EInvoiceService } from "./einvoice/einvoiceService.js";
 import { AuditService } from "./audit/auditService.js";
 import { UnitService } from "./inventory/unitService.js";
 import { PurchasingError, PurchasingService } from "./purchasing/purchasingService.js";
+import { PricingService } from "./catalog/pricingService.js";
+import { GiftCardError, GiftCardService } from "./crm/giftCardService.js";
 import { AiBudgetError, AiGateway, StubProvider } from "./ai/gateway.js";
 import { AnthropicProvider } from "./ai/anthropicProvider.js";
 import { generateDailyDigest } from "./ai/digest.js";
@@ -122,12 +124,14 @@ export function buildPgApp(config: PgAppConfig) {
   const auth = new AuthService(db, tokens, config.jwtSecret, audit);
   const inventory = new PgInventoryService(db);
   const loyalty = new LoyaltyService(db);
-  const sales = new SalesService(db, inventory, loyalty);
+  const pricing = new PricingService(db);
+  const giftCards = new GiftCardService(db);
+  const sales = new SalesService(db, inventory, loyalty, pricing, giftCards);
   const receiving = new ReceivingService(db, inventory);
   const units = new UnitService(db, inventory);
   const purchasing = new PurchasingService(db, receiving);
   const refunds = new RefundService(db, inventory, audit);
-  const webOrders = new WebOrderService(db, inventory);
+  const webOrders = new WebOrderService(db, inventory, pricing);
   const fulfillment = new FulfillmentService(db, inventory);
   const ops = new OpsService(db, inventory, audit);
   const analytics = new AnalyticsService(db);
@@ -224,6 +228,14 @@ export function buildPgApp(config: PgAppConfig) {
         : err.code === "SHORT_PICK" ? 422
         : err.code.endsWith("NOT_FOUND") ? 404
         : 400;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
+    if (err instanceof GiftCardError) {
+      const status =
+        err.code === "CARD_NOT_FOUND" ? 404
+        : err.code === "CARD_NOT_ACTIVE" ? 409
+        : err.code === "BAD_AMOUNT" ? 400
+        : 422; // INSUFFICIENT_BALANCE, CARD_EXPIRED
       return reply.code(status).send({ error: err.code, message: err.message });
     }
     if (err instanceof LoyaltyError) {
@@ -742,6 +754,89 @@ export function buildPgApp(config: PgAppConfig) {
       return { items: rows };
     });
 
+    secured.get("/v1/price-lists", async (req) => ({
+      items: await pricing.listPriceLists(req.auth.tenantId),
+    }));
+
+    secured.post("/v1/price-lists", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN" });
+      }
+      const parsed = z
+        .object({
+          name: z.string().min(1).max(80),
+          kind: z.enum(["promo", "wholesale", "channel"]),
+          currency: z.string().length(3),
+          startsAt: z.string().datetime().optional(),
+          endsAt: z.string().datetime().optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return reply.code(201).send(await pricing.createPriceList(req.auth.tenantId, parsed.data));
+    });
+
+    secured.put("/v1/price-lists/:priceListId/items", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN" });
+      }
+      const { priceListId } = req.params as { priceListId: string };
+      const parsed = z
+        .object({
+          items: z.array(
+            z.object({
+              variantId: z.string().uuid(),
+              priceMinor: z.number().int().nonnegative(),
+              minQty: z.number().positive().optional(),
+            }),
+          ).min(1).max(500),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return pricing.upsertItems(req.auth.tenantId, priceListId, parsed.data.items);
+    });
+
+    secured.post("/v1/products/:productId/images", async (req, reply) => {
+      const { productId } = req.params as { productId: string };
+      const parsed = z
+        .object({
+          url: z.string().url().max(500),
+          alt: z.string().max(200).optional(),
+          position: z.number().int().min(0).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const id = randomUUID();
+      await db.withTenant(req.auth.tenantId, (c) =>
+        c.query(
+          `INSERT INTO product_image (id, tenant_id, product_id, url, alt, position)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [id, req.auth.tenantId, productId, parsed.data.url,
+           parsed.data.alt ?? null, parsed.data.position ?? 0],
+        ),
+      );
+      return reply.code(201).send({ id, ...parsed.data });
+    });
+
+    secured.put("/v1/products/:productId/seo", async (req, reply) => {
+      const { productId } = req.params as { productId: string };
+      const parsed = z
+        .object({
+          title: z.string().max(120).optional(),
+          description: z.string().max(300).optional(),
+          keywords: z.array(z.string().max(40)).max(20).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const res = await db.withTenant(req.auth.tenantId, (c) =>
+        c.query(
+          "UPDATE product SET seo = $2, updated_at = now() WHERE id = $1",
+          [productId, JSON.stringify(parsed.data)],
+        ),
+      );
+      if (res.rowCount === 0) return reply.code(404).send({ error: "NOT_FOUND" });
+      return { productId, seo: parsed.data };
+    });
+
     secured.get("/v1/inventory/levels", async (req) => {
       const q = z.object({ locationId: z.string().uuid().optional() }).parse(req.query);
       const rows = await db.withTenant(req.auth.tenantId, async (c) => {
@@ -932,6 +1027,24 @@ export function buildPgApp(config: PgAppConfig) {
       return reply.code(201).send({ id, ...parsed.data, loyaltyPoints: 0 });
     });
 
+    secured.post("/v1/gift-cards", async (req, reply) => {
+      const parsed = z
+        .object({
+          amountMinor: z.number().int().positive(),
+          expiresAt: z.string().date().optional(),
+          orderId: z.string().uuid().optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await giftCards.issue(req.auth.tenantId, req.auth.userId, parsed.data);
+      return reply.code(201).send(result);
+    });
+
+    secured.get("/v1/gift-cards/:code", async (req) => {
+      const { code } = req.params as { code: string };
+      return giftCards.balance(req.auth.tenantId, code);
+    });
+
     secured.get("/v1/customers/:customerId/loyalty", async (req) => {
       const { customerId } = req.params as { customerId: string };
       return loyalty.balance(req.auth.tenantId, customerId);
@@ -959,8 +1072,9 @@ export function buildPgApp(config: PgAppConfig) {
           ).min(1),
           payments: z.array(
             z.object({
-              method: z.enum(["cash", "card", "loyalty_points"]),
+              method: z.enum(["cash", "card", "loyalty_points", "gift_card"]),
               amountMinor: z.number().int().positive(),
+              giftCardCode: z.string().max(40).optional(),
             }),
           ).min(1),
         })

@@ -131,6 +131,14 @@ the variant's warranty months.
 | GET `/v1/finance/trial-balance` | per-account totals; `netMinor` is always 0 |
 | GET `/v1/finance/pnl?from=&to=` | ISO datetimes; revenue, refunds, COGS, VAT |
 
+## Pricing, gift cards, media
+
+| Method & path | Notes |
+| --- | --- |
+| GET/POST `/v1/price-lists` · PUT `.../items` | promo lists apply automatically everywhere; effective price = min(catalog, active promo); catalog shows `listPriceMinor` strike-through |
+| POST `/v1/gift-cards` · GET `/v1/gift-cards/:code` | issue (`GC-XXXX-XXXX-XXXX`) / balance+history; redeem as a POS payment `{method:'gift_card', giftCardCode}` — debited atomically with the sale |
+| POST `/v1/products/:id/images` · PUT `/v1/products/:id/seo` | URL-based images + SEO metadata, surfaced in the public catalog |
+
 ## Audit & channels
 
 | Method & path | Notes |

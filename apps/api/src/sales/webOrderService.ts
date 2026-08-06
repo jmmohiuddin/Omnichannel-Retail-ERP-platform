@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { LedgerError, lineTotals, saleTotals } from "@omniretail/domain";
 import type { Db } from "../db.js";
 import { PgInventoryService, translatePgError } from "../inventory/pgInventory.js";
+import { PricingService } from "../catalog/pricingService.js";
 import { SaleError } from "./salesService.js";
 
 export interface WebOrderInput {
@@ -19,6 +20,7 @@ export class WebOrderService {
   constructor(
     private readonly db: Db,
     private readonly inventory: PgInventoryService,
+    private readonly pricing: PricingService,
   ) {}
 
   async resolveTenant(slug: string): Promise<{ id: string; name: string; currency: string; vatRateBp: number } | undefined> {
@@ -34,8 +36,14 @@ export class WebOrderService {
 
   async publicCatalog(tenantId: string): Promise<unknown[]> {
     return this.db.withTenant(tenantId, async (c) => {
-      const { rows } = await c.query(
+      const { rows } = await c.query<{
+        productId: string; variants: { id: string; priceMinor: number }[];
+      } & Record<string, unknown>>(
         `SELECT p.id AS "productId", p.name, p.slug, p.description, p.tracking,
+                p.seo,
+                coalesce((SELECT json_agg(json_build_object(
+                    'url', pi.url, 'alt', pi.alt) ORDER BY pi.position)
+                   FROM product_image pi WHERE pi.product_id = p.id), '[]') AS images,
                 coalesce(json_agg(json_build_object(
                   'id', v.id, 'sku', v.sku, 'priceMinor', v.price_minor,
                   'currency', v.currency,
@@ -50,6 +58,20 @@ export class WebOrderService {
           WHERE p.status = 'active'
           GROUP BY p.id ORDER BY p.name`,
       );
+      // Overlay effective (promo-aware) prices in one resolution pass.
+      const allVariantIds = rows.flatMap((r) => r.variants.map((v) => v.id));
+      const priceMap = await this.pricing.resolveWith(c, allVariantIds);
+      for (const row of rows) {
+        row.variants = row.variants.map((v) => {
+          const eff = priceMap.get(v.id);
+          if (!eff) return v;
+          return {
+            ...v,
+            priceMinor: eff.priceMinor,
+            ...(eff.source === "promo" ? { listPriceMinor: eff.listPriceMinor } : {}),
+          };
+        });
+      }
       return rows;
     });
   }
@@ -131,8 +153,9 @@ export class WebOrderService {
           );
         }
 
+        const priceMap = await this.pricing.resolveWith(c, variantIds);
         const computed = input.lines.map((l) =>
-          lineTotals(Number(byId.get(l.variantId)!.price_minor), l.quantity, tenant.vatRateBp),
+          lineTotals(priceMap.get(l.variantId)!.priceMinor, l.quantity, tenant.vatRateBp),
         );
         const totals = saleTotals(computed);
 
@@ -165,7 +188,8 @@ export class WebOrderService {
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
             [randomUUID(), tenant.id, orderId, line.variantId,
              `${variant.name} (${variant.sku})`, line.quantity,
-             Number(variant.price_minor), computed[i]!.taxMinor, computed[i]!.grossMinor],
+             priceMap.get(line.variantId)!.priceMinor,
+             computed[i]!.taxMinor, computed[i]!.grossMinor],
           );
           await this.inventory.postMovementWith(c, tenant.id, {
             id: randomUUID(),

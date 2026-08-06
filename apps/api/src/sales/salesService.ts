@@ -17,6 +17,8 @@ import { lineTotals, saleTotals, type LineTotals } from "@omniretail/domain";
 import type { Db } from "../db.js";
 import { PgInventoryService, translatePgError } from "../inventory/pgInventory.js";
 import { LoyaltyService } from "../crm/loyaltyService.js";
+import { PricingService } from "../catalog/pricingService.js";
+import { GiftCardService } from "../crm/giftCardService.js";
 
 export class SaleError extends Error {
   constructor(
@@ -58,7 +60,12 @@ export interface PosSaleInput {
   /** Attached CRM customer — required for loyalty_points payments. */
   customerId?: string;
   lines: SaleLineInput[];
-  payments: { method: "cash" | "card" | "loyalty_points"; amountMinor: number }[];
+  payments: {
+    method: "cash" | "card" | "loyalty_points" | "gift_card";
+    amountMinor: number;
+    /** Required for gift_card payments. */
+    giftCardCode?: string;
+  }[];
   offlineCreated?: boolean;
   occurredAt?: Date;
 }
@@ -86,6 +93,8 @@ export class SalesService {
     private readonly db: Db,
     private readonly inventory: PgInventoryService,
     private readonly loyalty: LoyaltyService,
+    private readonly pricing: PricingService,
+    private readonly giftCards: GiftCardService,
   ) {}
 
   async createPosSale(
@@ -122,18 +131,19 @@ export class SalesService {
           [variantIds],
         );
         const byId = new Map(variants.map((v) => [v.id, v]));
+        // The server owns pricing (FP-004): effective price = catalog or an
+        // active promo price list, resolved here — never the client's number.
+        const priceMap = await this.pricing.resolveWith(c, variantIds);
         for (const line of input.lines) {
           const variant = byId.get(line.variantId);
           if (!variant) {
             throw new SaleError("UNKNOWN_VARIANT", `variant ${line.variantId} not found`);
           }
-          // The server owns pricing (FP-004): the client's price must match
-          // the catalog exactly; deviations go through discounts, never a
-          // typed-over unit price.
-          if (line.unitPriceMinor !== Number(variant.price_minor)) {
+          const effective = priceMap.get(line.variantId)!.priceMinor;
+          if (line.unitPriceMinor !== effective) {
             throw new SaleError(
               "PRICE_MISMATCH",
-              `${variant.sku}: price is ${variant.price_minor}, got ${line.unitPriceMinor}`,
+              `${variant.sku}: effective price is ${effective}, got ${line.unitPriceMinor}`,
             );
           }
           const discount = line.discountMinor ?? 0;
@@ -295,6 +305,18 @@ export class SalesService {
           await this.loyalty.redeemWith(c, tenantId, input.customerId, input.id, loyaltyPaid);
         }
 
+        // Gift-card tenders debit the card inside the sale transaction — a
+        // failed debit rolls back the whole sale (same discipline as loyalty).
+        for (const payment of input.payments) {
+          if (payment.method !== "gift_card") continue;
+          if (!payment.giftCardCode) {
+            throw new SaleError("PAYMENT_MISMATCH", "gift_card payment requires giftCardCode");
+          }
+          await this.giftCards.redeemWith(
+            c, tenantId, payment.giftCardCode, input.id, payment.amountMinor,
+          );
+        }
+
         // Cash lands in the register's open session so blind reconciliation
         // (FP-005) has a complete ledger of what should be in the drawer.
         const session = await c.query<{ id: string }>(
@@ -305,10 +327,11 @@ export class SalesService {
         for (const payment of input.payments) {
           await c.query(
             `INSERT INTO payment (id, tenant_id, order_id, method, amount_minor, currency,
-                                  status, received_by, cash_session_id)
-             VALUES ($1,$2,$3,$4,$5,$6,'captured',$7,$8)`,
+                                  status, received_by, cash_session_id, gateway_ref)
+             VALUES ($1,$2,$3,$4,$5,$6,'captured',$7,$8,$9)`,
             [randomUUID(), tenantId, input.id, payment.method, payment.amountMinor,
-             currency, actorUserId, payment.method === "cash" ? cashSessionId : null],
+             currency, actorUserId, payment.method === "cash" ? cashSessionId : null,
+             payment.method === "gift_card" ? payment.giftCardCode!.toUpperCase() : null],
           );
         }
 
