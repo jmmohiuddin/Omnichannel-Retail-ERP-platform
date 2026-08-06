@@ -1,0 +1,532 @@
+/*
+ * OmniRetail POS — single stylesheet.
+ * Logical properties only (inline/block) so RTL Arabic is a `dir="rtl"` flip,
+ * not a rewrite (docs/08-uae-localization.md §3). Dark-first, light via
+ * prefers-color-scheme. Touch targets >= 44px.
+ */
+
+:root {
+  --bg: #0f1419;
+  --bg-raised: #171e26;
+  --bg-inset: #0b0f13;
+  --border: #2a3441;
+  --text: #e6edf3;
+  --text-muted: #8b98a5;
+  --accent: #2f81f7;
+  --accent-contrast: #ffffff;
+  --success: #2ea86f;
+  --danger: #e5534b;
+  --warning: #d4a72c;
+  --radius: 10px;
+  --touch: 48px;
+  --font:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    "Noto Sans Arabic",
+    sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4f6f8;
+    --bg-raised: #ffffff;
+    --bg-inset: #e9edf1;
+    --border: #d4dbe2;
+    --text: #1c2733;
+    --text-muted: #5c6b7a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.error-text {
+  color: var(--danger);
+  margin-block: 0.5rem;
+}
+
+.brand {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-block: 0;
+}
+
+/* ---------- Buttons ---------- */
+
+.btn {
+  min-block-size: var(--touch);
+  padding-inline: 1rem;
+  padding-block: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+.btn-block {
+  inline-size: 100%;
+}
+
+.btn-small {
+  min-block-size: 40px;
+  padding-inline: 0.75rem;
+  font-weight: 500;
+}
+
+/* ---------- Centered screens (login / setup / location) ---------- */
+
+.centered-screen {
+  min-block-size: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+.panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 1.5);
+  padding: 2rem;
+  inline-size: min(26rem, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.panel p {
+  margin-block: 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.field span {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.field input,
+.scan-input,
+.search-input {
+  min-block-size: var(--touch);
+  padding-inline: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  color: var(--text);
+  font: inherit;
+}
+
+.field input:focus-visible,
+.scan-input:focus-visible,
+.search-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.row-gap {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.location-list {
+  list-style: none;
+  margin-block: 0;
+  padding-inline-start: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.location-btn {
+  inline-size: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  text-align: start;
+}
+
+.location-name {
+  font-size: 1.05rem;
+}
+
+/* ---------- POS shell ---------- */
+
+.pos-shell {
+  block-size: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pos-topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding-inline: 1rem;
+  padding-block: 0.5rem;
+  border-block-end: 1px solid var(--border);
+  background: var(--bg-raised);
+  flex: 0 0 auto;
+}
+
+.topbar-info {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.topbar-spacer {
+  flex: 1;
+}
+
+.badge {
+  padding-inline: 0.7rem;
+  padding-block: 0.3rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.badge-pending {
+  background: var(--warning);
+  color: #14100a;
+}
+
+.pos-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(22rem, 2fr);
+  min-block-size: 0;
+}
+
+/* ---------- Left: search ---------- */
+
+.pos-left {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  min-block-size: 0;
+  border-inline-end: 1px solid var(--border);
+}
+
+.scan-form {
+  display: flex;
+}
+
+.scan-input {
+  flex: 1;
+  font-size: 1.1rem;
+  font-family: var(--mono);
+}
+
+.search-results {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-block-size: 0;
+}
+
+.result-hint {
+  margin-block: 0.25rem;
+}
+
+.result-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  min-block-size: var(--touch);
+  padding-inline: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-align: start;
+}
+
+.result-row:hover,
+.result-row:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.result-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-sku {
+  font-size: 0.85rem;
+}
+
+/* ---------- Right: cart ---------- */
+
+.pos-right {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  background: var(--bg-raised);
+}
+
+.cart-lines {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-block-size: 0;
+}
+
+.cart-empty {
+  margin-block: 1rem;
+  text-align: center;
+}
+
+.cart-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.cart-line-main {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+.cart-line-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cart-line-total {
+  min-inline-size: 6.5rem;
+  text-align: end;
+  font-weight: 600;
+}
+
+.qty-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.btn-qty {
+  inline-size: var(--touch);
+  padding-inline: 0;
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.qty {
+  min-inline-size: 2ch;
+  text-align: center;
+  font-size: 1.1rem;
+}
+
+/* ---------- Totals & tender ---------- */
+
+.totals {
+  margin-block: 0;
+  padding: 1rem;
+  border-block-start: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.totals div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.totals dt {
+  color: var(--text-muted);
+}
+
+.totals dd {
+  margin-inline-start: 0;
+}
+
+.grand-total dt,
+.grand-total dd {
+  color: var(--text);
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.tender-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  padding: 1rem;
+  padding-block-start: 0;
+}
+
+.btn-tender {
+  min-block-size: 72px;
+  font-size: 1.3rem;
+  letter-spacing: 0.06em;
+}
+
+.btn-cash {
+  background: var(--success);
+  border-color: var(--success);
+  color: #ffffff;
+}
+
+.btn-card {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+/* ---------- Receipt modal ---------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.55);
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+.modal {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 1.5);
+  inline-size: min(28rem, 100%);
+  max-block-size: 90vh;
+  overflow-y: auto;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.receipt-header h2 {
+  margin-block: 0;
+  font-size: 1.2rem;
+}
+
+.receipt-header p {
+  margin-block: 0.15rem;
+}
+
+.receipt-orderno {
+  font-weight: 600;
+}
+
+.offline-note {
+  color: var(--warning);
+}
+
+.receipt-lines {
+  list-style: none;
+  margin-block: 0;
+  padding-inline-start: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border-block: 1px dashed var(--border);
+  padding-block: 0.75rem;
+}
+
+.receipt-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.receipt-line-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.receipt-totals {
+  border-block-start: none;
+  padding: 0;
+}
+
+/* ---------- Setup ---------- */
+
+.setup-panel p[role="status"] {
+  color: var(--text-muted);
+}

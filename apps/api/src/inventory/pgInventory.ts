@@ -30,11 +30,25 @@ export class PgInventoryService {
   constructor(private readonly db: Db) {}
 
   async postMovement(tenantId: string, input: MovementInput): Promise<PostedMovementRow> {
-    validateMovementShape(input); // fail fast with precise domain errors
-
     try {
-      return await this.db.withTenant(tenantId, async (c) => {
-        const { rows } = await c.query<{ seq: string }>(
+      return await this.db.withTenant(tenantId, (c) => this.postMovementWith(c, tenantId, input));
+    } catch (err) {
+      throw translatePgError(err);
+    }
+  }
+
+  /**
+   * Post a movement using an existing tenant-scoped transaction client, so a
+   * sale can write order + payment + movements atomically. Caller owns the
+   * transaction and must map errors via translatePgError on failure.
+   */
+  async postMovementWith(
+    c: pg.PoolClient,
+    tenantId: string,
+    input: MovementInput,
+  ): Promise<PostedMovementRow> {
+    validateMovementShape(input); // fail fast with precise domain errors
+    const { rows } = await c.query<{ seq: string }>(
           `INSERT INTO stock_movement
              (id, tenant_id, occurred_at, movement_type, variant_id, stock_unit_id,
               quantity, from_location_id, from_state, to_location_id, to_state,
@@ -54,15 +68,35 @@ export class PgInventoryService {
         const seq = Number(rows[0]!.seq);
 
         const applyDelta = async (locationId: string, state: StockState, delta: number) => {
-          await c.query(
-            `INSERT INTO stock_level (tenant_id, location_id, variant_id, state, quantity, updated_seq)
-             VALUES ($1,$2,$3,$4,$5,$6)
-             ON CONFLICT (tenant_id, location_id, variant_id, state)
-             DO UPDATE SET quantity   = stock_level.quantity + EXCLUDED.quantity,
-                           updated_seq = EXCLUDED.updated_seq,
-                           updated_at  = now()`,
+          if (delta >= 0) {
+            // Credit side: upsert (a fresh row with a positive quantity is valid).
+            await c.query(
+              `INSERT INTO stock_level (tenant_id, location_id, variant_id, state, quantity, updated_seq)
+               VALUES ($1,$2,$3,$4,$5,$6)
+               ON CONFLICT (tenant_id, location_id, variant_id, state)
+               DO UPDATE SET quantity   = stock_level.quantity + EXCLUDED.quantity,
+                             updated_seq = EXCLUDED.updated_seq,
+                             updated_at  = now()`,
+              [tenantId, locationId, input.variantId, state, delta, seq],
+            );
+            return;
+          }
+          // Debit side must UPDATE an existing row: INSERT..ON CONFLICT checks
+          // the CHECK constraint on the proposed (negative) row before conflict
+          // resolution, so an upsert can never debit. A missing row means there
+          // was never stock in this bucket.
+          const res = await c.query(
+            `UPDATE stock_level
+                SET quantity = quantity + $5, updated_seq = $6, updated_at = now()
+              WHERE tenant_id = $1 AND location_id = $2 AND variant_id = $3 AND state = $4`,
             [tenantId, locationId, input.variantId, state, delta, seq],
           );
+          if (res.rowCount === 0) {
+            throw new LedgerError(
+              "INSUFFICIENT_STOCK",
+              `no ${state} stock for variant ${input.variantId} at ${locationId}`,
+            );
+          }
         };
         if (input.from) await applyDelta(input.from.locationId, input.from.state, -input.quantity);
         if (input.to) await applyDelta(input.to.locationId, input.to.state, input.quantity);
@@ -79,11 +113,7 @@ export class PgInventoryService {
             }),
           ],
         );
-        return { ...input, seq };
-      });
-    } catch (err) {
-      throw translatePgError(err);
-    }
+    return { ...input, seq };
   }
 
   async availability(tenantId: string, variantId: string, locationId: string): Promise<Availability> {
@@ -146,7 +176,7 @@ export class PgInventoryService {
 }
 
 /** Map database enforcement failures onto the same LedgerError codes the domain uses. */
-function translatePgError(err: unknown): unknown {
+export function translatePgError(err: unknown): unknown {
   if (!isPgError(err)) return err;
   if (err.code === "23505") {
     if (err.constraint === "stock_movement_pkey") {

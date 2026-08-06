@@ -71,6 +71,12 @@ export class AuthService {
         "INSERT INTO user_role (user_id, role_id, tenant_id) VALUES ($1,$2,$3)",
         [userId, roleId, tenantId],
       );
+      // Native channels exist from day one; marketplace channels attach later.
+      await c.query(
+        `INSERT INTO channel (id, tenant_id, kind, name) VALUES
+         ($1,$3,'pos','Main POS'), ($2,$3,'web','Web Store')`,
+        [randomUUID(), randomUUID(), tenantId],
+      );
     });
     return this.issue(tenantId, userId, ["owner"]);
   }

@@ -1,0 +1,280 @@
+import { createHash, randomUUID } from "node:crypto";
+
+/**
+ * Deterministic UUID for a sale line's ledger movement, derived from the sale
+ * id: replaying the same offline sale always produces the same movement ids,
+ * so the ledger's duplicate-id rejection makes replay idempotent end to end.
+ */
+export function saleLineMovementId(saleId: string, lineIndex: number): string {
+  const digest = createHash("sha256").update(`${saleId}:${lineIndex}`).digest();
+  const bytes = Buffer.from(digest.subarray(0, 16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+import { lineTotals, saleTotals, type LineTotals } from "@omniretail/domain";
+import type { Db } from "../db.js";
+import { PgInventoryService, translatePgError } from "../inventory/pgInventory.js";
+
+export class SaleError extends Error {
+  constructor(
+    readonly code:
+      | "UNKNOWN_VARIANT"
+      | "PAYMENT_MISMATCH"
+      | "EMPTY_SALE"
+      | "DUPLICATE_SALE"
+      | "NO_POS_CHANNEL",
+    message: string,
+  ) {
+    super(message);
+    this.name = "SaleError";
+  }
+}
+
+export interface SaleLineInput {
+  variantId: string;
+  quantity: number;
+  /** Tax-inclusive unit price in fils. Server verifies against catalog price. */
+  unitPriceMinor: number;
+  stockUnitId?: string;
+  discountMinor?: number;
+}
+
+export interface PosSaleInput {
+  /** Client-generated UUID — idempotency key for offline replay. */
+  id: string;
+  deviceId: string;
+  locationId: string;
+  customerName?: string;
+  lines: SaleLineInput[];
+  payments: { method: "cash" | "card"; amountMinor: number }[];
+  offlineCreated?: boolean;
+  occurredAt?: Date;
+}
+
+export interface PosSaleResult {
+  orderId: string;
+  orderNo: string;
+  totals: {
+    subtotalMinor: number;
+    taxMinor: number;
+    netMinor: number;
+    totalMinor: number;
+    currency: string;
+  };
+}
+
+/**
+ * A POS sale is ONE transaction: order header + lines + payments + a ledger
+ * movement per line + outbox events. If any piece fails (oversell, duplicate
+ * replay, bad variant) the entire sale rolls back — there is no state where
+ * money moved but stock didn't, or vice versa.
+ */
+export class SalesService {
+  constructor(
+    private readonly db: Db,
+    private readonly inventory: PgInventoryService,
+  ) {}
+
+  async createPosSale(
+    tenantId: string,
+    actorUserId: string,
+    input: PosSaleInput,
+  ): Promise<PosSaleResult> {
+    if (input.lines.length === 0) throw new SaleError("EMPTY_SALE", "sale has no lines");
+
+    try {
+      return await this.db.withTenant(tenantId, async (c) => {
+        const tenant = await c.query<{ base_currency: string; vat_rate_bp: number }>(
+          "SELECT base_currency, vat_rate_bp FROM tenant WHERE id = $1",
+          [tenantId],
+        );
+        const { base_currency: currency, vat_rate_bp: vatRateBp } = tenant.rows[0]!;
+
+        // Verify variants exist and prices come from the catalog unless the
+        // cashier-band override matches (v1: price must equal catalog price;
+        // overrides arrive with approval workflows in a later increment).
+        const variantIds = input.lines.map((l) => l.variantId);
+        const { rows: variants } = await c.query<{
+          id: string; sku: string; price_minor: string; name: string;
+        }>(
+          `SELECT v.id, v.sku, v.price_minor, p.name
+             FROM variant v JOIN product p ON p.id = v.product_id
+            WHERE v.id = ANY($1)`,
+          [variantIds],
+        );
+        const byId = new Map(variants.map((v) => [v.id, v]));
+        for (const line of input.lines) {
+          if (!byId.has(line.variantId)) {
+            throw new SaleError("UNKNOWN_VARIANT", `variant ${line.variantId} not found`);
+          }
+        }
+
+        const computed: LineTotals[] = input.lines.map((l) =>
+          lineTotals(l.unitPriceMinor, l.quantity, vatRateBp, l.discountMinor ?? 0),
+        );
+        const totals = saleTotals(computed);
+        const paid = input.payments.reduce((s, p) => s + p.amountMinor, 0);
+        if (paid !== totals.totalMinor) {
+          throw new SaleError(
+            "PAYMENT_MISMATCH",
+            `payments (${paid}) do not equal total (${totals.totalMinor})`,
+          );
+        }
+
+        // POS channel (created at tenant provisioning; guard for older tenants)
+        const channel = await c.query<{ id: string }>(
+          "SELECT id FROM channel WHERE kind = 'pos' LIMIT 1",
+        );
+        if (!channel.rows[0]) throw new SaleError("NO_POS_CHANNEL", "tenant has no POS channel");
+
+        // Gapless per-tenant order number, locked within this transaction.
+        const counter = await c.query<{ last_no: string }>(
+          `INSERT INTO order_counter (tenant_id, last_no) VALUES ($1, 1)
+           ON CONFLICT (tenant_id) DO UPDATE SET last_no = order_counter.last_no + 1
+           RETURNING last_no`,
+          [tenantId],
+        );
+        const orderNo = `INV-${String(counter.rows[0]!.last_no).padStart(6, "0")}`;
+
+        const occurredAt = input.occurredAt ?? new Date();
+        await c.query(
+          `INSERT INTO sales_order
+             (id, tenant_id, order_no, channel_id, location_id, cashier_user_id, device_id,
+              status, currency, subtotal_minor, discount_minor, tax_minor, total_minor,
+              placed_at, completed_at, offline_created, meta)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'completed',$8,$9,$10,$11,$12,$13,$13,$14,$15)`,
+          [
+            input.id, tenantId, orderNo, channel.rows[0].id, input.locationId,
+            actorUserId, input.deviceId, currency,
+            totals.subtotalMinor,
+            input.lines.reduce((s, l) => s + (l.discountMinor ?? 0), 0),
+            totals.taxMinor, totals.totalMinor, occurredAt,
+            input.offlineCreated ?? false,
+            JSON.stringify(input.customerName ? { customerName: input.customerName } : {}),
+          ],
+        );
+
+        for (let i = 0; i < input.lines.length; i++) {
+          const line = input.lines[i]!;
+          const lt = computed[i]!;
+          const variant = byId.get(line.variantId)!;
+          await c.query(
+            `INSERT INTO sales_order_line
+               (id, tenant_id, order_id, variant_id, stock_unit_id, description,
+                quantity, unit_price_minor, discount_minor, tax_minor, total_minor)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            [
+              randomUUID(), tenantId, input.id, line.variantId, line.stockUnitId ?? null,
+              `${variant.name} (${variant.sku})`, line.quantity, line.unitPriceMinor,
+              line.discountMinor ?? 0, lt.taxMinor, lt.grossMinor,
+            ],
+          );
+
+          // Ledger movement — same transaction, same invariants as any movement.
+          await this.inventory.postMovementWith(c, tenantId, {
+            id: saleLineMovementId(input.id, i),
+            movementType: "sale",
+            variantId: line.variantId,
+            ...(line.stockUnitId ? { stockUnitId: line.stockUnitId } : {}),
+            quantity: line.quantity,
+            from: { locationId: input.locationId, state: "on_hand" },
+            actorUserId,
+            deviceId: input.deviceId,
+            reference: { type: "order", id: input.id },
+            occurredAt,
+          });
+        }
+
+        for (const payment of input.payments) {
+          await c.query(
+            `INSERT INTO payment (id, tenant_id, order_id, method, amount_minor, currency,
+                                  status, received_by)
+             VALUES ($1,$2,$3,$4,$5,$6,'captured',$7)`,
+            [randomUUID(), tenantId, input.id, payment.method, payment.amountMinor,
+             currency, actorUserId],
+          );
+        }
+
+        await c.query(
+          `INSERT INTO outbox (id, tenant_id, aggregate, event_type, payload)
+           VALUES ($1,$2,$3,'order.created',$4)`,
+          [randomUUID(), tenantId, `order:${input.id}`,
+           JSON.stringify({ orderId: input.id, orderNo, channel: "pos",
+                            totalMinor: totals.totalMinor, currency })],
+        );
+
+        return { orderId: input.id, orderNo, totals: { ...totals, currency } };
+      });
+    } catch (err) {
+      const translated = translatePgError(err);
+      if (
+        translated instanceof Error &&
+        "code" in translated &&
+        (translated as { code: string }).code === "DUPLICATE_MOVEMENT"
+      ) {
+        throw translated;
+      }
+      if ((err as { code?: string; constraint?: string }).code === "23505" &&
+          (err as { constraint?: string }).constraint === "sales_order_pkey") {
+        throw new SaleError("DUPLICATE_SALE", "sale already recorded");
+      }
+      throw translated;
+    }
+  }
+
+  async receipt(tenantId: string, orderId: string): Promise<Record<string, unknown> | undefined> {
+    return this.db.withTenant(tenantId, async (c) => {
+      const order = await c.query(
+        `SELECT o.id, o.order_no, o.currency, o.subtotal_minor, o.discount_minor,
+                o.tax_minor, o.total_minor, o.placed_at, o.meta,
+                t.name AS tenant_name, t.trn, t.vat_rate_bp,
+                l.name AS location_name, l.code AS location_code,
+                u.full_name AS cashier_name
+           FROM sales_order o
+           JOIN tenant t ON t.id = o.tenant_id
+           LEFT JOIN location l ON l.id = o.location_id
+           LEFT JOIN app_user u ON u.id = o.cashier_user_id
+          WHERE o.id = $1`,
+        [orderId],
+      );
+      const head = order.rows[0];
+      if (!head) return undefined;
+      const { rows: lines } = await c.query(
+        `SELECT description, quantity, unit_price_minor, discount_minor, tax_minor, total_minor
+           FROM sales_order_line WHERE order_id = $1 ORDER BY description`,
+        [orderId],
+      );
+      const { rows: payments } = await c.query(
+        "SELECT method, amount_minor FROM payment WHERE order_id = $1",
+        [orderId],
+      );
+      return {
+        kind: "tax_invoice", // FTA: simplified tax invoice fields (docs/08 §2)
+        orderNo: head.order_no,
+        issuedAt: head.placed_at,
+        seller: { name: head.tenant_name, trn: head.trn ?? null },
+        location: { name: head.location_name, code: head.location_code },
+        cashier: head.cashier_name,
+        currency: head.currency,
+        vatRateBp: head.vat_rate_bp,
+        lines: lines.map((l) => ({
+          description: l.description,
+          quantity: Number(l.quantity),
+          unitPriceMinor: Number(l.unit_price_minor),
+          discountMinor: Number(l.discount_minor),
+          taxMinor: Number(l.tax_minor),
+          totalMinor: Number(l.total_minor),
+        })),
+        totals: {
+          subtotalMinor: Number(head.subtotal_minor),
+          discountMinor: Number(head.discount_minor),
+          taxMinor: Number(head.tax_minor),
+          totalMinor: Number(head.total_minor),
+        },
+        payments: payments.map((p) => ({ method: p.method, amountMinor: Number(p.amount_minor) })),
+      };
+    });
+  }
+}

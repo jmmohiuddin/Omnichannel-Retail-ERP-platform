@@ -8,12 +8,14 @@
  */
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
+import cors from "@fastify/cors";
 import { z } from "zod";
 import { LedgerError } from "@omniretail/domain";
 import { Db } from "./db.js";
 import { AuthError, AuthService } from "./auth/service.js";
 import { TokenService, type AccessClaims } from "./auth/tokens.js";
 import { PgInventoryService } from "./inventory/pgInventory.js";
+import { SaleError, SalesService } from "./sales/salesService.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -93,6 +95,12 @@ export function buildPgApp(config: PgAppConfig) {
   const tokens = new TokenService(config.jwtSecret);
   const auth = new AuthService(db, tokens);
   const inventory = new PgInventoryService(db);
+  const sales = new SalesService(db, inventory);
+
+  // Browser clients (admin portal, POS webview). Tokens travel in the
+  // Authorization header — no cookies — so a permissive dev origin is safe;
+  // production pins origins via config.
+  app.register(cors, { origin: true });
 
   app.addHook("onClose", async () => {
     await db.close();
@@ -114,6 +122,14 @@ export function buildPgApp(config: PgAppConfig) {
     if (err instanceof AuthError) {
       const status = err.code === "SLUG_TAKEN" ? 409 : 401;
       return reply.code(status).send({ error: err.code });
+    }
+    if (err instanceof SaleError) {
+      const status =
+        err.code === "PAYMENT_MISMATCH" ? 422
+        : err.code === "UNKNOWN_VARIANT" ? 404
+        : err.code === "DUPLICATE_SALE" ? 409
+        : 400;
+      return reply.code(status).send({ error: err.code, message: err.message });
     }
     app.log.error(err);
     return reply.code(500).send({ error: "INTERNAL" });
@@ -201,6 +217,132 @@ export function buildPgApp(config: PgAppConfig) {
         ),
       );
       return reply.code(201).send({ id, productId, ...parsed.data });
+    });
+
+    secured.get("/v1/locations", async (req) => {
+      const rows = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          "SELECT id, kind, name, code FROM location WHERE is_active ORDER BY name",
+        );
+        return rows;
+      });
+      return { items: rows };
+    });
+
+    secured.get("/v1/products", async (req) => {
+      const q = z.object({ query: z.string().trim().max(100).optional() }).parse(req.query);
+      const rows = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `SELECT p.id, p.name, p.slug, p.tracking, p.status,
+                  coalesce(json_agg(json_build_object(
+                    'id', v.id, 'sku', v.sku, 'barcode', v.barcode,
+                    'priceMinor', v.price_minor, 'currency', v.currency
+                  ) ORDER BY v.sku) FILTER (WHERE v.id IS NOT NULL), '[]') AS variants
+             FROM product p
+             LEFT JOIN variant v ON v.product_id = p.id AND v.is_active
+            WHERE p.status <> 'archived'
+              AND ($1::text IS NULL OR p.name ILIKE '%'||$1||'%'
+                   OR EXISTS (SELECT 1 FROM variant vs WHERE vs.product_id = p.id
+                              AND (vs.sku ILIKE '%'||$1||'%' OR vs.barcode = $1)))
+            GROUP BY p.id ORDER BY p.name LIMIT 50`,
+          [q.query ?? null],
+        );
+        return rows;
+      });
+      return { items: rows };
+    });
+
+    secured.get("/v1/inventory/levels", async (req) => {
+      const q = z.object({ locationId: z.string().uuid().optional() }).parse(req.query);
+      const rows = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `SELECT sl.variant_id AS "variantId", v.sku, p.name AS "productName",
+                  sl.location_id AS "locationId", sl.state, sl.quantity::float8 AS quantity
+             FROM stock_level sl
+             JOIN variant v ON v.id = sl.variant_id
+             JOIN product p ON p.id = v.product_id
+            WHERE ($1::uuid IS NULL OR sl.location_id = $1) AND sl.quantity <> 0
+            ORDER BY p.name, v.sku, sl.state`,
+          [q.locationId ?? null],
+        );
+        return rows;
+      });
+      return { items: rows };
+    });
+
+    secured.post("/v1/devices", async (req, reply) => {
+      const parsed = z
+        .object({
+          kind: z.enum(["pos_register", "mobile", "kiosk"]),
+          name: z.string().min(1).max(60),
+          locationId: z.string().uuid().optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const id = randomUUID();
+      await db.withTenant(req.auth.tenantId, (c) =>
+        c.query(
+          `INSERT INTO device (id, tenant_id, kind, name, location_id, status)
+           VALUES ($1,$2,$3,$4,$5,'approved')`,
+          [id, req.auth.tenantId, parsed.data.kind, parsed.data.name,
+           parsed.data.locationId ?? null],
+        ),
+      );
+      return reply.code(201).send({ id, ...parsed.data });
+    });
+
+    secured.post("/v1/pos/sales", async (req, reply) => {
+      const parsed = z
+        .object({
+          id: z.string().uuid(),
+          deviceId: z.string().uuid(),
+          locationId: z.string().uuid(),
+          customerName: z.string().max(120).optional(),
+          offlineCreated: z.boolean().optional(),
+          occurredAt: z.coerce.date().optional(),
+          lines: z.array(
+            z.object({
+              variantId: z.string().uuid(),
+              quantity: z.number().positive(),
+              unitPriceMinor: z.number().int().nonnegative(),
+              stockUnitId: z.string().uuid().optional(),
+              discountMinor: z.number().int().nonnegative().optional(),
+            }),
+          ).min(1),
+          payments: z.array(
+            z.object({
+              method: z.enum(["cash", "card"]),
+              amountMinor: z.number().int().positive(),
+            }),
+          ).min(1),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      try {
+        const result = await sales.createPosSale(req.auth.tenantId, req.auth.userId, parsed.data);
+        return reply.code(201).send(result);
+      } catch (err) {
+        // Idempotent replay: the sale already exists → return it as success.
+        if (err instanceof SaleError && err.code === "DUPLICATE_SALE") {
+          const receipt = await sales.receipt(req.auth.tenantId, parsed.data.id);
+          if (receipt) {
+            return reply.code(200).send({
+              orderId: parsed.data.id,
+              orderNo: receipt.orderNo,
+              totals: receipt.totals,
+              duplicate: true,
+            });
+          }
+        }
+        throw err;
+      }
+    });
+
+    secured.get("/v1/orders/:orderId/receipt", async (req, reply) => {
+      const { orderId } = req.params as { orderId: string };
+      const receipt = await sales.receipt(req.auth.tenantId, orderId);
+      if (!receipt) return reply.code(404).send({ error: "NOT_FOUND" });
+      return receipt;
     });
 
     secured.post("/v1/inventory/movements", async (req, reply) => {

@@ -25,6 +25,8 @@ export async function migrate(databaseUrl: string, sqlDir?: string): Promise<str
   await client.connect();
   const applied: string[] = [];
   try {
+    // Serialize concurrent runners (multi-process boot, parallel test files).
+    await client.query("SELECT pg_advisory_lock(hashtext('omniretail_migrations'))");
     await client.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         filename   text PRIMARY KEY,
@@ -65,6 +67,9 @@ export async function migrate(databaseUrl: string, sqlDir?: string): Promise<str
       }
     }
   } finally {
+    await client
+      .query("SELECT pg_advisory_unlock(hashtext('omniretail_migrations'))")
+      .catch(() => {});
     await client.end();
   }
   return applied;
