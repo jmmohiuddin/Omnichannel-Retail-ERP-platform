@@ -126,7 +126,9 @@ describe.skipIf(!run)("finance: double-entry journal", () => {
 
   it("ensureCoreAccounts is idempotent and returns the code→id map", async () => {
     const first = await finance.ensureCoreAccounts(tenantId);
-    expect(Object.keys(first).sort()).toEqual(["1000", "1100", "1200", "2200", "4000", "4900"]);
+    expect(Object.keys(first).sort()).toEqual(
+      ["1000", "1100", "1200", "1300", "2200", "4000", "4900", "5000"],
+    );
 
     const second = await finance.ensureCoreAccounts(tenantId);
     expect(second).toEqual(first); // same ids — nothing re-created

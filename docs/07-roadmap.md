@@ -13,12 +13,17 @@ Phases are cumulative; each ends with a releasable increment, updated docs, and 
 > Noon skeleton, marketplace order import, outbox relay + channel sync + jobs,
 > statistical AI (forecast/reorder/dead-stock) with Claude narration gateway.
 >
-> **Deliberately deferred (external prerequisites, per owner decision):**
-> payment-gateway capture (needs merchant accounts: Network Intl/Telr/Stripe
-> AE/Tabby), Tauri desktop shell (needs Rust toolchain), live marketplace
-> credentials (Noon endpoint paths flagged UNVERIFIED), UAE e-invoicing
-> transmission (mandate phasing), courier APIs, mobile companion app,
-> per-bin stock quantities (WMS v2), COGS journal entries.
+> **Phase 5 additions:** payment capture via gateway port + HMAC-verified
+> webhooks (mock gateway; Network Intl/Telr/Stripe AE adapters slot in with
+> merchant credentials), shipping via courier port (mock courier; Aramex/
+> SMSA/Quiqup adapters later), UAE e-invoice generation (PINT-AE-draft UBL
+> with explicit pre-transmission disclaimer), COGS journal postings, and the
+> Expo mobile companion (typecheck+unit-verified; no native toolchain here).
+>
+> **Still requires external accounts/tooling to activate:** real gateway +
+> courier + marketplace credentials, e-invoice transmission via an accredited
+> provider, Tauri desktop shell (Rust toolchain), app-store builds of the
+> mobile app, per-bin stock quantities (WMS v2).
 
 ## Phase 0 — Foundations (this repo state)
 Architecture + ADRs, PRD, integration & security design, core database schema,

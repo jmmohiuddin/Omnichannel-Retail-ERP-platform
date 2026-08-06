@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "OmniRetail Mobile",
+    "slug": "omniretail-mobile",
+    "version": "0.1.0",
+    "scheme": "omniretail",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "platforms": ["ios", "android"],
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.omniretail.mobile"
+    }
+  }
+}

@@ -24,9 +24,11 @@ export const CORE_ACCOUNTS = [
   { code: "1000", name: "Cash", kind: "asset" },
   { code: "1100", name: "Card Clearing", kind: "asset" },
   { code: "1200", name: "Accounts Receivable", kind: "asset" },
+  { code: "1300", name: "Inventory", kind: "asset" },
   { code: "2200", name: "VAT Payable", kind: "liability" },
   { code: "4000", name: "Sales Revenue", kind: "revenue" },
   { code: "4900", name: "Refunds", kind: "revenue" }, // contra-revenue
+  { code: "5000", name: "Cost of Goods Sold", kind: "expense" },
 ] as const;
 
 export interface JournalLineView {
@@ -80,7 +82,8 @@ export interface ProfitAndLoss {
 }
 
 const COGS_NOTE =
-  "COGS not posted in v1: inventory cost entries land in a later increment; costOfSalesMinor is always 0.";
+  "COGS uses recorded unit cost (serialized units) or variant cost at sale time; " +
+  "lines without cost data contribute 0, so review cost coverage before relying on margin.";
 
 /**
  * Minimal double-entry finance module (AED, minor units / fils).
@@ -170,6 +173,19 @@ export class FinanceService {
         const taxMinor = Number(head.tax_minor);
         const netMinor = totalMinor - taxMinor;
 
+        // COGS: cost of the units sold, from the serialized unit's recorded
+        // cost where available, else the variant's cost_minor. Lines without
+        // any cost data contribute 0 (the P&L notes the gap honestly).
+        const cogs = await c.query<{ cost: string | null }>(
+          `SELECT sum(l.quantity * coalesce(su.unit_cost_minor, v.cost_minor, 0))::bigint AS cost
+             FROM sales_order_line l
+             JOIN variant v ON v.id = l.variant_id
+             LEFT JOIN stock_unit su ON su.id = l.stock_unit_id
+            WHERE l.order_id = $1`,
+          [orderId],
+        );
+        const cogsMinor = Number(cogs.rows[0]?.cost ?? 0);
+
         const lines: { code: string; debit: number; credit: number }[] = [
           ...[...debits.entries()].map(([code, amount]) => ({
             code,
@@ -178,6 +194,9 @@ export class FinanceService {
           })),
           { code: "4000", debit: 0, credit: netMinor },
           { code: "2200", debit: 0, credit: taxMinor },
+          // Balanced pair: DR COGS / CR Inventory — zero when no cost data.
+          { code: "5000", debit: cogsMinor, credit: 0 },
+          { code: "1300", debit: 0, credit: cogsMinor },
         ].filter((l) => l.debit !== 0 || l.credit !== 0);
 
         return this.insertEntry(c, tenantId, accounts, {
@@ -335,7 +354,7 @@ export class FinanceService {
         grossRevenueMinor,
         refundsMinor,
         netRevenueMinor: grossRevenueMinor - refundsMinor,
-        costOfSalesMinor: 0,
+        costOfSalesMinor: -creditBalance("5000") || 0, // expense: debit balance (|| 0 avoids -0)
         costOfSalesNote: COGS_NOTE,
         vatCollectedMinor: creditBalance("2200"),
       };

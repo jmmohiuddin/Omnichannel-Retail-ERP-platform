@@ -25,6 +25,11 @@ import { AnalyticsService } from "./analytics/analyticsService.js";
 import { FinanceError, FinanceService } from "./finance/financeService.js";
 import { LoyaltyError, LoyaltyService } from "./crm/loyaltyService.js";
 import { WmsError, WmsService } from "./wms/wmsService.js";
+import { MockGateway, WebhookVerificationError } from "./payments/gatewayPort.js";
+import { PaymentError, PaymentService } from "./payments/paymentService.js";
+import { MockCourier } from "./shipping/courierPort.js";
+import { ShippingError, ShippingService } from "./shipping/shippingService.js";
+import { EInvoiceService } from "./einvoice/einvoiceService.js";
 import { AiBudgetError, AiGateway, StubProvider } from "./ai/gateway.js";
 import { AnthropicProvider } from "./ai/anthropicProvider.js";
 import { generateDailyDigest } from "./ai/digest.js";
@@ -101,6 +106,8 @@ export interface PgAppConfig {
   jwtSecret: string;
   /** When absent, AI narration uses the deterministic StubProvider. */
   anthropicApiKey?: string;
+  /** HMAC secret for the mock payment gateway's webhooks (dev default). */
+  paymentWebhookSecret?: string;
 }
 
 export function buildPgApp(config: PgAppConfig) {
@@ -119,6 +126,12 @@ export function buildPgApp(config: PgAppConfig) {
   const analytics = new AnalyticsService(db);
   const finance = new FinanceService(db);
   const wms = new WmsService(db);
+  const mockGateway = new MockGateway(
+    config.paymentWebhookSecret ?? "dev-mock-webhook-secret",
+  );
+  const payments = new PaymentService(db, new Map([[mockGateway.key, mockGateway]]));
+  const shipping = new ShippingService(db, new Map([["mock", new MockCourier()]]));
+  const einvoice = new EInvoiceService(db);
   const aiGateway = new AiGateway(
     config.anthropicApiKey
       ? new AnthropicProvider({ apiKey: config.anthropicApiKey })
@@ -173,6 +186,20 @@ export function buildPgApp(config: PgAppConfig) {
         err.code === "SESSION_NOT_FOUND" || err.code === "TRANSFER_NOT_FOUND" ||
         err.code === "COUNT_NOT_FOUND" ? 404
         : 409;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
+    if (err instanceof ShippingError) {
+      const status =
+        err.code.endsWith("NOT_FOUND") ? 404
+        : err.code === "BAD_STATE" || err.code === "ALREADY_SHIPPED" ? 409
+        : 400;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
+    if (err instanceof PaymentError) {
+      const status =
+        err.code === "ORDER_NOT_FOUND" ? 404
+        : err.code === "BAD_STATE" || err.code === "INTENT_EXISTS" ? 409
+        : 400;
       return reply.code(status).send({ error: err.code, message: err.message });
     }
     if (err instanceof WmsError) {
@@ -257,6 +284,41 @@ export function buildPgApp(config: PgAppConfig) {
     if (!parsed.success) return sendZodError(reply, parsed.error.issues);
     const result = await webOrders.createOrder(tenant, parsed.data);
     return reply.code(201).send(result);
+  });
+
+  // Customer pays their own pending order → hosted-checkout redirect.
+  app.post("/v1/public/:slug/orders/:orderId/pay", async (req, reply) => {
+    const { slug, orderId } = req.params as { slug: string; orderId: string };
+    const tenant = await webOrders.resolveTenant(slug);
+    if (!tenant) return reply.code(404).send({ error: "NOT_FOUND" });
+    const parsed = z.object({ gateway: z.string().default("mock") }).safeParse(req.body ?? {});
+    if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+    const intent = await payments.createIntent(tenant.id, orderId, parsed.data.gateway);
+    return reply.code(201).send(intent);
+  });
+
+  // Gateway webhooks: signature is verified over the RAW body, so this scope
+  // parses JSON bodies as strings instead of objects.
+  app.register(async (webhooks) => {
+    webhooks.removeAllContentTypeParsers();
+    webhooks.addContentTypeParser("*", { parseAs: "string" }, (_req, body, done) =>
+      done(null, body),
+    );
+    webhooks.post("/v1/webhooks/payments/:gateway", async (req, reply) => {
+      const { gateway } = req.params as { gateway: string };
+      let event;
+      try {
+        event = payments
+          .gateway(gateway)
+          .parseWebhook(req.body as string, req.headers["x-webhook-signature"] as string | undefined);
+      } catch (err) {
+        if (err instanceof WebhookVerificationError) {
+          return reply.code(401).send({ error: "BAD_SIGNATURE" });
+        }
+        throw err;
+      }
+      return payments.applyWebhook(gateway, event, req.body as string);
+    });
   });
 
   // ---- authenticated ----
@@ -689,6 +751,39 @@ export function buildPgApp(config: PgAppConfig) {
         }
         throw err;
       }
+    });
+
+    secured.post("/v1/orders/:orderId/shipments", async (req, reply) => {
+      const { orderId } = req.params as { orderId: string };
+      const parsed = z
+        .object({
+          courier: z.string().default("mock"),
+          address: z.record(z.unknown()).default({}),
+          codAmountMinor: z.number().int().nonnegative().optional(),
+        })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await shipping.createShipment(
+        req.auth.tenantId, req.auth.userId, orderId, parsed.data,
+      );
+      return reply.code(201).send(result);
+    });
+
+    secured.post("/v1/shipments/:shipmentId/refresh", async (req) => {
+      const { shipmentId } = req.params as { shipmentId: string };
+      return shipping.refreshTracking(req.auth.tenantId, shipmentId);
+    });
+
+    secured.get("/v1/shipments/:shipmentId", async (req) => {
+      const { shipmentId } = req.params as { shipmentId: string };
+      return shipping.getShipment(req.auth.tenantId, shipmentId);
+    });
+
+    secured.get("/v1/orders/:orderId/einvoice", async (req, reply) => {
+      const { orderId } = req.params as { orderId: string };
+      const doc = await einvoice.generateForOrder(req.auth.tenantId, orderId);
+      if (!doc) return reply.code(404).send({ error: "NOT_FOUND" });
+      return doc;
     });
 
     secured.get("/v1/orders/:orderId/receipt", async (req, reply) => {
