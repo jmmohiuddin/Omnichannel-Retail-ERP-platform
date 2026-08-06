@@ -1,0 +1,22 @@
+{
+  "name": "@omniretail/api",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "node --watch --experimental-strip-types src/server.ts",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@omniretail/domain": "workspace:*",
+    "fastify": "^5.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

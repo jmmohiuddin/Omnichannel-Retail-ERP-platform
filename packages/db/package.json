@@ -1,0 +1,11 @@
+{
+  "name": "@omniretail/db",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "SQL-first PostgreSQL migrations for OmniRetail OS (apply sql/ in order)",
+  "scripts": {
+    "build": "true",
+    "typecheck": "true",
+    "test": "true"
+  }
+}
