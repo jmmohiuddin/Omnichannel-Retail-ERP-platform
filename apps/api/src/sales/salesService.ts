@@ -27,7 +27,9 @@ export class SaleError extends Error {
       | "DUPLICATE_SALE"
       | "NO_POS_CHANNEL"
       | "SERIALIZED_REQUIRED"
-      | "UNIT_UNAVAILABLE",
+      | "UNIT_UNAVAILABLE"
+      | "PRICE_MISMATCH"
+      | "DISCOUNT_APPROVAL_REQUIRED",
     message: string,
   ) {
     super(message);
@@ -42,6 +44,9 @@ export interface SaleLineInput {
   unitPriceMinor: number;
   stockUnitId?: string;
   discountMinor?: number;
+  /** Approved 'discount' approval — required when the discount exceeds the
+   *  cashier band (FP-004 exceptional-discount control). */
+  discountApprovalId?: string;
 }
 
 export interface PosSaleInput {
@@ -92,11 +97,16 @@ export class SalesService {
 
     try {
       return await this.db.withTenant(tenantId, async (c) => {
-        const tenant = await c.query<{ base_currency: string; vat_rate_bp: number }>(
-          "SELECT base_currency, vat_rate_bp FROM tenant WHERE id = $1",
+        const tenant = await c.query<{
+          base_currency: string; vat_rate_bp: number; settings: { pos?: { discountBandBp?: number } };
+        }>(
+          "SELECT base_currency, vat_rate_bp, settings FROM tenant WHERE id = $1",
           [tenantId],
         );
         const { base_currency: currency, vat_rate_bp: vatRateBp } = tenant.rows[0]!;
+        // Cashier discount band: fraction of the line gross a cashier may
+        // discount without a manager approval. Default 5% (500 bp).
+        const discountBandBp = tenant.rows[0]!.settings?.pos?.discountBandBp ?? 500;
 
         // Verify variants exist and prices come from the catalog unless the
         // cashier-band override matches (v1: price must equal catalog price;
@@ -104,8 +114,9 @@ export class SalesService {
         const variantIds = input.lines.map((l) => l.variantId);
         const { rows: variants } = await c.query<{
           id: string; sku: string; price_minor: string; name: string; tracking: string;
+          warranty_months: number | null;
         }>(
-          `SELECT v.id, v.sku, v.price_minor, p.name, p.tracking
+          `SELECT v.id, v.sku, v.price_minor, p.name, p.tracking, v.warranty_months
              FROM variant v JOIN product p ON p.id = v.product_id
             WHERE v.id = ANY($1)`,
           [variantIds],
@@ -115,6 +126,38 @@ export class SalesService {
           const variant = byId.get(line.variantId);
           if (!variant) {
             throw new SaleError("UNKNOWN_VARIANT", `variant ${line.variantId} not found`);
+          }
+          // The server owns pricing (FP-004): the client's price must match
+          // the catalog exactly; deviations go through discounts, never a
+          // typed-over unit price.
+          if (line.unitPriceMinor !== Number(variant.price_minor)) {
+            throw new SaleError(
+              "PRICE_MISMATCH",
+              `${variant.sku}: price is ${variant.price_minor}, got ${line.unitPriceMinor}`,
+            );
+          }
+          const discount = line.discountMinor ?? 0;
+          if (discount > 0) {
+            const gross = Math.round(line.unitPriceMinor * line.quantity);
+            const band = Math.floor((gross * discountBandBp) / 10_000);
+            if (discount > band) {
+              if (!line.discountApprovalId) {
+                throw new SaleError(
+                  "DISCOUNT_APPROVAL_REQUIRED",
+                  `${variant.sku}: discount ${discount} exceeds the cashier band (${band}); manager approval required`,
+                );
+              }
+              const approval = await c.query<{ status: string; kind: string }>(
+                "SELECT status, kind FROM approval WHERE id = $1",
+                [line.discountApprovalId],
+              );
+              if (approval.rows[0]?.kind !== "discount" || approval.rows[0].status !== "approved") {
+                throw new SaleError(
+                  "DISCOUNT_APPROVAL_REQUIRED",
+                  "discount approval is missing, not approved, or of the wrong kind",
+                );
+              }
+            }
           }
           // Serialized items sell as an exact scanned unit, never as a quantity
           // (FP-003: scan enforcement — a phone can't leave stock anonymously).
@@ -149,10 +192,16 @@ export class SalesService {
               `unit is ${u.state}${u.location_id !== input.locationId ? " at another location" : ""}`,
             );
           }
+          // Warranty starts at the moment of sale (docs/08: retailers evidence
+          // warranty from the tax invoice date).
+          const months = byId.get(line.variantId)!.warranty_months;
           await c.query(
-            `UPDATE stock_unit SET state = 'sold', sold_order_id = $2, updated_at = now()
+            `UPDATE stock_unit
+                SET state = 'sold', sold_order_id = $2, updated_at = now(),
+                    warranty_until = CASE WHEN $3::int IS NULL THEN warranty_until
+                                          ELSE (now() + make_interval(months => $3::int))::date END
               WHERE id = $1`,
-            [line.stockUnitId, input.id],
+            [line.stockUnitId, input.id, months],
           );
         }
 
@@ -208,12 +257,14 @@ export class SalesService {
           await c.query(
             `INSERT INTO sales_order_line
                (id, tenant_id, order_id, variant_id, stock_unit_id, description,
-                quantity, unit_price_minor, discount_minor, tax_minor, total_minor)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+                quantity, unit_price_minor, discount_minor, discount_approval_id,
+                tax_minor, total_minor)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
             [
               randomUUID(), tenantId, input.id, line.variantId, line.stockUnitId ?? null,
               `${variant.name} (${variant.sku})`, line.quantity, line.unitPriceMinor,
-              line.discountMinor ?? 0, lt.taxMinor, lt.grossMinor,
+              line.discountMinor ?? 0, line.discountApprovalId ?? null,
+              lt.taxMinor, lt.grossMinor,
             ],
           );
 

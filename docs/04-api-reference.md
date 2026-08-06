@@ -55,6 +55,29 @@ POST `/v1/auth/mfa/activate` `{code}` — after activation, login requires `mfaC
 | POST `/v1/inventory/receipts` | goods receiving; serialized variants take `units:[{imei1,imei2?,serialNo?,unitCostMinor?}]` (Luhn-validated, unique) |
 | GET `/v1/stock-units?imei=&serialNo=` | resolve a scanned unit |
 
+## Purchasing (owner/manager/warehouse)
+
+| Method & path | Notes |
+| --- | --- |
+| GET/POST `/v1/suppliers` | list / create `{name,contact?,paymentTerms?}` |
+| POST `/v1/purchase-orders` | `{supplierId,locationId,lines[{variantId,orderedQty,unitCostMinor}]}` → gapless `PO-######` |
+| GET `/v1/purchase-orders/:id` | header + lines + received progress |
+| POST `/v1/purchase-orders/:id/receive` | receive against PO (plain qty or serialized units); over-receipt 422; updates last cost + unit provenance |
+
+## Serialized units (repairs & history)
+
+| Method & path | Notes |
+| --- | --- |
+| POST `/v1/stock-units/:id/repair-out` · `/repair-in` | in_stock ⇄ in_repair with ledger movements |
+| GET `/v1/stock-units/:id/history` | the unit's biography: identity, warranty, PO provenance, sale, all movements |
+| POST `/v1/pos/discount-approvals` | request an exceptional-discount approval; manager decides, cashier attaches `discountApprovalId` to the line |
+
+POS pricing rules: line `unitPriceMinor` must equal the catalog price (422
+`PRICE_MISMATCH`); discounts above the cashier band (tenant setting
+`settings.pos.discountBandBp`, default 5%) require an approved discount approval
+(403 `DISCOUNT_APPROVAL_REQUIRED`). Serialized sales stamp `warranty_until` from
+the variant's warranty months.
+
 ## Sales & orders
 
 | Method & path | Notes |

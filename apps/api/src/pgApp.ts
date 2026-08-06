@@ -31,6 +31,8 @@ import { MockCourier } from "./shipping/courierPort.js";
 import { ShippingError, ShippingService } from "./shipping/shippingService.js";
 import { EInvoiceService } from "./einvoice/einvoiceService.js";
 import { AuditService } from "./audit/auditService.js";
+import { UnitService } from "./inventory/unitService.js";
+import { PurchasingError, PurchasingService } from "./purchasing/purchasingService.js";
 import { AiBudgetError, AiGateway, StubProvider } from "./ai/gateway.js";
 import { AnthropicProvider } from "./ai/anthropicProvider.js";
 import { generateDailyDigest } from "./ai/digest.js";
@@ -122,6 +124,8 @@ export function buildPgApp(config: PgAppConfig) {
   const loyalty = new LoyaltyService(db);
   const sales = new SalesService(db, inventory, loyalty);
   const receiving = new ReceivingService(db, inventory);
+  const units = new UnitService(db, inventory);
+  const purchasing = new PurchasingService(db, receiving);
   const refunds = new RefundService(db, inventory, audit);
   const webOrders = new WebOrderService(db, inventory);
   const fulfillment = new FulfillmentService(db, inventory);
@@ -169,10 +173,11 @@ export function buildPgApp(config: PgAppConfig) {
     }
     if (err instanceof SaleError) {
       const status =
-        err.code === "PAYMENT_MISMATCH" ? 422
+        err.code === "PAYMENT_MISMATCH" || err.code === "PRICE_MISMATCH" ? 422
         : err.code === "UNKNOWN_VARIANT" ? 404
         : err.code === "DUPLICATE_SALE" ? 409
         : err.code === "UNIT_UNAVAILABLE" ? 409
+        : err.code === "DISCOUNT_APPROVAL_REQUIRED" ? 403
         : 400;
       return reply.code(status).send({ error: err.code, message: err.message });
     }
@@ -181,6 +186,14 @@ export function buildPgApp(config: PgAppConfig) {
         err.code === "ORDER_NOT_FOUND" ? 404
         : err.code === "BAD_STATE" ? 409
         : err.code === "UNIT_UNAVAILABLE" ? 409
+        : 400;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
+    if (err instanceof PurchasingError) {
+      const status =
+        err.code.endsWith("NOT_FOUND") ? 404
+        : err.code === "BAD_STATE" ? 409
+        : err.code === "OVER_RECEIPT" ? 422
         : 400;
       return reply.code(status).send({ error: err.code, message: err.message });
     }
@@ -498,6 +511,82 @@ export function buildPgApp(config: PgAppConfig) {
       return reply.code(201).send(created);
     });
 
+    const purchasingRole = (req: { auth: AccessClaims }) =>
+      requireRole(req, "owner", "manager", "warehouse");
+
+    secured.get("/v1/suppliers", async (req) => ({
+      items: await purchasing.listSuppliers(req.auth.tenantId),
+    }));
+
+    secured.post("/v1/suppliers", async (req, reply) => {
+      if (!purchasingRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const parsed = z
+        .object({
+          name: z.string().min(1).max(120),
+          contact: z.record(z.unknown()).optional(),
+          paymentTerms: z.string().max(120).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return reply.code(201).send(await purchasing.createSupplier(req.auth.tenantId, parsed.data));
+    });
+
+    secured.post("/v1/purchase-orders", async (req, reply) => {
+      if (!purchasingRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const parsed = z
+        .object({
+          supplierId: z.string().uuid(),
+          locationId: z.string().uuid(),
+          currency: z.string().length(3).optional(),
+          expectedAt: z.string().date().optional(),
+          note: z.string().max(300).optional(),
+          lines: z.array(
+            z.object({
+              variantId: z.string().uuid(),
+              orderedQty: z.number().positive(),
+              unitCostMinor: z.number().int().nonnegative(),
+            }),
+          ).min(1),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await purchasing.createPurchaseOrder(
+        req.auth.tenantId, req.auth.userId, parsed.data,
+      );
+      return reply.code(201).send(result);
+    });
+
+    secured.get("/v1/purchase-orders/:poId", async (req) => {
+      const { poId } = req.params as { poId: string };
+      return purchasing.getPurchaseOrder(req.auth.tenantId, poId);
+    });
+
+    secured.post("/v1/purchase-orders/:poId/receive", async (req, reply) => {
+      if (!purchasingRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const { poId } = req.params as { poId: string };
+      const parsed = z
+        .object({
+          deviceId: z.string().uuid().optional(),
+          lines: z.array(
+            z.object({
+              variantId: z.string().uuid(),
+              quantity: z.number().positive().optional(),
+              units: z.array(
+                z.object({
+                  imei1: z.string().optional(),
+                  imei2: z.string().optional(),
+                  serialNo: z.string().optional(),
+                  unitCostMinor: z.number().int().nonnegative().optional(),
+                }),
+              ).optional(),
+            }),
+          ).min(1),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return purchasing.receiveAgainstPo(req.auth.tenantId, req.auth.userId, poId, parsed.data);
+    });
+
     secured.post("/v1/inventory/receipts", async (req, reply) => {
       const parsed = z
         .object({
@@ -532,6 +621,52 @@ export function buildPgApp(config: PgAppConfig) {
       const unit = await receiving.findUnit(req.auth.tenantId, q);
       if (!unit) return reply.code(404).send({ error: "NOT_FOUND" });
       return unit;
+    });
+
+    secured.post("/v1/stock-units/:unitId/repair-out", async (req, reply) => {
+      const { unitId } = req.params as { unitId: string };
+      const parsed = z.object({ note: z.string().max(300).optional() }).safeParse(req.body ?? {});
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return units.repairOut(req.auth.tenantId, req.auth.userId, unitId, parsed.data.note);
+    });
+
+    secured.post("/v1/stock-units/:unitId/repair-in", async (req, reply) => {
+      const { unitId } = req.params as { unitId: string };
+      const parsed = z.object({ note: z.string().max(300).optional() }).safeParse(req.body ?? {});
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return units.repairIn(req.auth.tenantId, req.auth.userId, unitId, parsed.data.note);
+    });
+
+    secured.get("/v1/stock-units/:unitId/history", async (req, reply) => {
+      const { unitId } = req.params as { unitId: string };
+      const history = await units.history(req.auth.tenantId, unitId);
+      if (!history) return reply.code(404).send({ error: "NOT_FOUND" });
+      return history;
+    });
+
+    // Manager pre-authorizes an exceptional discount; the cashier attaches the
+    // approved id to the sale line (FP-004).
+    secured.post("/v1/pos/discount-approvals", async (req, reply) => {
+      const parsed = z
+        .object({
+          reason: z.string().min(3).max(300),
+          amountMinor: z.number().int().positive(),
+          variantId: z.string().uuid().optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const approvalId = randomUUID();
+      await db.withTenant(req.auth.tenantId, (c) =>
+        c.query(
+          `INSERT INTO approval (id, tenant_id, kind, requested_by, status, payload, reason)
+           VALUES ($1,$2,'discount',$3,'pending',$4,$5)`,
+          [approvalId, req.auth.tenantId, req.auth.userId,
+           JSON.stringify({ amountMinor: parsed.data.amountMinor,
+                            variantId: parsed.data.variantId ?? null }),
+           parsed.data.reason],
+        ),
+      );
+      return reply.code(201).send({ approvalId, status: "pending" });
     });
 
     secured.post("/v1/orders/:orderId/refunds", async (req, reply) => {
@@ -819,6 +954,7 @@ export function buildPgApp(config: PgAppConfig) {
               unitPriceMinor: z.number().int().nonnegative(),
               stockUnitId: z.string().uuid().optional(),
               discountMinor: z.number().int().nonnegative().optional(),
+              discountApprovalId: z.string().uuid().optional(),
             }),
           ).min(1),
           payments: z.array(
