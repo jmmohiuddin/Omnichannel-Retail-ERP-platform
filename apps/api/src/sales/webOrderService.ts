@@ -34,13 +34,15 @@ export class WebOrderService {
     });
   }
 
-  async publicCatalog(tenantId: string): Promise<unknown[]> {
+  async publicCatalog(tenantId: string, categorySlug?: string): Promise<unknown[]> {
     return this.db.withTenant(tenantId, async (c) => {
       const { rows } = await c.query<{
         productId: string; variants: { id: string; priceMinor: number }[];
       } & Record<string, unknown>>(
         `SELECT p.id AS "productId", p.name, p.slug, p.description, p.tracking,
                 p.seo,
+                (SELECT json_build_object('name', cat.name, 'slug', cat.slug)
+                   FROM category cat WHERE cat.id = p.category_id) AS category,
                 coalesce((SELECT json_agg(json_build_object(
                     'url', pi.url, 'alt', pi.alt) ORDER BY pi.position)
                    FROM product_image pi WHERE pi.product_id = p.id), '[]') AS images,
@@ -56,7 +58,11 @@ export class WebOrderService {
               WHERE sl.variant_id = v.id AND sl.state = 'on_hand'
            ) av ON true
           WHERE p.status = 'active'
+            AND ($1::text IS NULL OR EXISTS (
+              SELECT 1 FROM category cat
+               WHERE cat.id = p.category_id AND cat.slug = $1))
           GROUP BY p.id ORDER BY p.name`,
+        [categorySlug ?? null],
       );
       // Overlay effective (promo-aware) prices in one resolution pass.
       const allVariantIds = rows.flatMap((r) => r.variants.map((v) => v.id));

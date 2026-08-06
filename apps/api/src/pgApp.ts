@@ -72,6 +72,7 @@ const productSchema = z.object({
   slug: z.string().regex(/^[a-z0-9-]+$/),
   tracking: z.enum(["none", "batch", "serialized"]).default("none"),
   description: z.string().optional(),
+  categoryId: z.string().uuid().optional(),
 });
 
 const variantSchema = z.object({
@@ -289,7 +290,8 @@ export function buildPgApp(config: PgAppConfig) {
     const { slug } = req.params as { slug: string };
     const tenant = await webOrders.resolveTenant(slug);
     if (!tenant) return reply.code(404).send({ error: "NOT_FOUND" });
-    const items = await webOrders.publicCatalog(tenant.id);
+    const q = z.object({ category: z.string().max(80).optional() }).parse(req.query);
+    const items = await webOrders.publicCatalog(tenant.id, q.category);
     return { tenant: { name: tenant.name, slug, currency: tenant.currency }, items };
   });
 
@@ -384,10 +386,12 @@ export function buildPgApp(config: PgAppConfig) {
       const id = randomUUID();
       await db.withTenant(req.auth.tenantId, (c) =>
         c.query(
-          `INSERT INTO product (id, tenant_id, name, slug, tracking, description, status)
-           VALUES ($1,$2,$3,$4,$5,$6,'active')`,
+          `INSERT INTO product (id, tenant_id, name, slug, tracking, description,
+                                category_id, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'active')`,
           [id, req.auth.tenantId, parsed.data.name, parsed.data.slug,
-           parsed.data.tracking, parsed.data.description ?? null],
+           parsed.data.tracking, parsed.data.description ?? null,
+           parsed.data.categoryId ?? null],
         ),
       );
       return reply.code(201).send({ id, ...parsed.data });
@@ -752,6 +756,70 @@ export function buildPgApp(config: PgAppConfig) {
         return rows;
       });
       return { items: rows };
+    });
+
+    secured.get("/v1/categories", async (req) => {
+      const rows = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `SELECT id, parent_id AS "parentId", name, slug, position,
+                  (SELECT count(*)::int FROM product p WHERE p.category_id = category.id) AS products
+             FROM category ORDER BY position, name`,
+        );
+        return rows;
+      });
+      return { items: rows };
+    });
+
+    secured.post("/v1/categories", async (req, reply) => {
+      const parsed = z
+        .object({
+          name: z.string().min(1).max(80),
+          slug: z.string().regex(/^[a-z0-9-]+$/).max(80),
+          parentId: z.string().uuid().optional(),
+          position: z.number().int().min(0).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const id = randomUUID();
+      await db.withTenant(req.auth.tenantId, (c) =>
+        c.query(
+          `INSERT INTO category (id, tenant_id, name, slug, parent_id, position)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [id, req.auth.tenantId, parsed.data.name, parsed.data.slug,
+           parsed.data.parentId ?? null, parsed.data.position ?? 0],
+        ),
+      );
+      return reply.code(201).send({ id, ...parsed.data });
+    });
+
+    secured.put("/v1/products/:productId/category", async (req, reply) => {
+      const { productId } = req.params as { productId: string };
+      const parsed = z
+        .object({ categoryId: z.string().uuid().nullable() })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const res = await db.withTenant(req.auth.tenantId, (c) =>
+        c.query(
+          "UPDATE product SET category_id = $2, updated_at = now() WHERE id = $1",
+          [productId, parsed.data.categoryId],
+        ),
+      );
+      if (res.rowCount === 0) return reply.code(404).send({ error: "NOT_FOUND" });
+      return { productId, categoryId: parsed.data.categoryId };
+    });
+
+    secured.put("/v1/customers/:customerId/price-list", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN" });
+      }
+      const { customerId } = req.params as { customerId: string };
+      const parsed = z
+        .object({ priceListId: z.string().uuid().nullable() })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return pricing.assignCustomerPriceList(
+        req.auth.tenantId, customerId, parsed.data.priceListId,
+      );
     });
 
     secured.get("/v1/price-lists", async (req) => ({

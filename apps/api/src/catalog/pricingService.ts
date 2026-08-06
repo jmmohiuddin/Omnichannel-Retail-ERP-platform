@@ -54,6 +54,65 @@ export class PricingService {
     return map;
   }
 
+  /**
+   * Per-line pricing for a sale: when the customer carries an assigned
+   * (wholesale) price list, its best quantity tier (highest min_qty ≤ line
+   * quantity, inside the list's date window) is the negotiated price and
+   * takes precedence; otherwise retail rules apply (catalog vs promo).
+   * Returns one price per input line, in order.
+   */
+  async resolveLines(
+    c: pg.PoolClient,
+    lines: { variantId: string; quantity: number }[],
+    customerId?: string,
+  ): Promise<number[]> {
+    const retail = await this.resolveWith(c, lines.map((l) => l.variantId));
+
+    let assignedListId: string | null = null;
+    if (customerId) {
+      const { rows } = await c.query<{ price_list_id: string | null }>(
+        "SELECT price_list_id FROM customer WHERE id = $1",
+        [customerId],
+      );
+      assignedListId = rows[0]?.price_list_id ?? null;
+    }
+
+    const prices: number[] = [];
+    for (const line of lines) {
+      let price = retail.get(line.variantId)?.priceMinor;
+      if (assignedListId) {
+        const { rows } = await c.query<{ price_minor: string }>(
+          `SELECT pli.price_minor
+             FROM price_list_item pli
+             JOIN price_list pl ON pl.id = pli.price_list_id
+            WHERE pli.price_list_id = $1 AND pli.variant_id = $2
+              AND pli.min_qty <= $3
+              AND (pl.starts_at IS NULL OR pl.starts_at <= now())
+              AND (pl.ends_at IS NULL OR pl.ends_at > now())
+            ORDER BY pli.min_qty DESC
+            LIMIT 1`,
+          [assignedListId, line.variantId, line.quantity],
+        );
+        if (rows[0]) price = Number(rows[0].price_minor);
+      }
+      // Unknown variant → sentinel; the caller's own existence check raises
+      // the precise UNKNOWN_VARIANT error (-1 can never match a real price).
+      prices.push(price ?? -1);
+    }
+    return prices;
+  }
+
+  async assignCustomerPriceList(
+    tenantId: string,
+    customerId: string,
+    priceListId: string | null,
+  ): Promise<{ customerId: string; priceListId: string | null }> {
+    await this.db.withTenant(tenantId, (c) =>
+      c.query("UPDATE customer SET price_list_id = $2 WHERE id = $1", [customerId, priceListId]),
+    );
+    return { customerId, priceListId };
+  }
+
   async createPriceList(
     tenantId: string,
     input: { name: string; kind: "promo" | "wholesale" | "channel"; currency: string;

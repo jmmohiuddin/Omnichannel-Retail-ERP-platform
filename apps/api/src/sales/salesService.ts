@@ -131,15 +131,21 @@ export class SalesService {
           [variantIds],
         );
         const byId = new Map(variants.map((v) => [v.id, v]));
-        // The server owns pricing (FP-004): effective price = catalog or an
-        // active promo price list, resolved here — never the client's number.
-        const priceMap = await this.pricing.resolveWith(c, variantIds);
-        for (const line of input.lines) {
+        // The server owns pricing (FP-004): effective price = the customer's
+        // assigned wholesale tier when present, else catalog vs active promo —
+        // never the client's number.
+        const linePrices = await this.pricing.resolveLines(
+          c,
+          input.lines.map((l) => ({ variantId: l.variantId, quantity: l.quantity })),
+          input.customerId,
+        );
+        for (let li = 0; li < input.lines.length; li++) {
+          const line = input.lines[li]!;
           const variant = byId.get(line.variantId);
           if (!variant) {
             throw new SaleError("UNKNOWN_VARIANT", `variant ${line.variantId} not found`);
           }
-          const effective = priceMap.get(line.variantId)!.priceMinor;
+          const effective = linePrices[li]!;
           if (line.unitPriceMinor !== effective) {
             throw new SaleError(
               "PRICE_MISMATCH",
