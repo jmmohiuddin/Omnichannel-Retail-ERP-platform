@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useLocation, useOutletContext, useParams } from "react-router-dom";
 import type { StoreContext } from "../App.js";
 import { ApiError, startPayment, type OrderResult } from "../lib/api.js";
+import { useCustomerSession } from "../lib/customerSession.js";
 import { t, type MessageKey } from "../lib/i18n.js";
 import { formatMinor } from "../lib/money.js";
 import { useLang } from "../lib/useLang.js";
@@ -19,6 +20,7 @@ export function ConfirmationPage() {
   const location = useLocation();
   const state = location.state as { result?: unknown } | null;
   const result = state && isOrderResult(state.result) ? state.result : null;
+  const account = useCustomerSession(slug);
 
   const [paying, setPaying] = useState(false);
   // Message key (not prose) so it re-renders in the active language.
@@ -77,6 +79,13 @@ export function ConfirmationPage() {
         <p>
           <strong>{t(lang, "confirm.pendingTitle")}</strong> {t(lang, "confirm.pendingBody")}
         </p>
+        {!account.session && (
+          <p>
+            <Link to={`/${slug}/account/sign-in`}>
+              {t(lang, "confirm.signInPrompt")}
+            </Link>
+          </p>
+        )}
       </div>
 
       {result && (

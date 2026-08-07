@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useOutletContext, useParams } from "react-router-dom";
 import type { StoreContext } from "../App.js";
+import { fetchCatalog, type CatalogItem } from "../lib/api.js";
 import { t } from "../lib/i18n.js";
 import { formatMinor } from "../lib/money.js";
 import { useCart } from "../lib/useCart.js";
@@ -12,7 +13,29 @@ export function ProductPage() {
   const { lang } = useLang();
   const cart = useCart(slug);
 
-  const product = catalog.items.find((item) => item.slug === productSlug);
+  // Language overlay: when the shopper is in Arabic, re-fetch the catalog so
+  // the API can return translated name/description for this product. Falls
+  // back to the layout's (English) items on failure or before the fetch lands.
+  const [items, setItems] = useState<CatalogItem[]>(catalog.items);
+  useEffect(() => {
+    if (lang === "en") {
+      setItems(catalog.items);
+      return;
+    }
+    let cancelled = false;
+    fetchCatalog(slug, lang)
+      .then((next) => {
+        if (!cancelled) setItems(next.items);
+      })
+      .catch(() => {
+        /* keep the base items */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, lang, catalog.items]);
+
+  const product = items.find((item) => item.slug === productSlug);
   const [variantId, setVariantId] = useState<string>(() => {
     const first = product?.variants.find((v) => v.available > 0) ?? product?.variants[0];
     return first?.id ?? "";

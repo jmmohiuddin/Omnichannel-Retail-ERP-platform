@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import type { StoreContext } from "../App.js";
-import type { CatalogItem } from "../lib/api.js";
+import { fetchCatalog, type CatalogItem } from "../lib/api.js";
 import { t } from "../lib/i18n.js";
 import { formatMinor } from "../lib/money.js";
 import { useLang } from "../lib/useLang.js";
@@ -19,17 +19,38 @@ export function CatalogPage() {
   const { slug, catalog } = useOutletContext<StoreContext>();
   const { lang } = useLang();
   const [query, setQuery] = useState("");
+  // The layout fetches the catalog once (no language). Re-fetch here when the
+  // shopper switches to Arabic so the API-side overlay swaps in translated
+  // names/descriptions; English keeps the layout's fetch to avoid a duplicate.
+  const [items, setItems] = useState<CatalogItem[]>(catalog.items);
+  useEffect(() => {
+    if (lang === "en") {
+      setItems(catalog.items);
+      return;
+    }
+    let cancelled = false;
+    fetchCatalog(slug, lang)
+      .then((next) => {
+        if (!cancelled) setItems(next.items);
+      })
+      .catch(() => {
+        // Non-fatal: keep the base (English) items so the page still renders.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, lang, catalog.items]);
 
-  const items = useMemo(() => {
+  const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (q.length === 0) return catalog.items;
-    return catalog.items.filter(
+    if (q.length === 0) return items;
+    return items.filter(
       (item) =>
         item.name.toLowerCase().includes(q) ||
         (item.description ?? "").toLowerCase().includes(q) ||
         item.variants.some((v) => v.sku.toLowerCase().includes(q)),
     );
-  }, [catalog.items, query]);
+  }, [items, query]);
 
   return (
     <>
@@ -49,20 +70,20 @@ export function CatalogPage() {
         </div>
       </div>
 
-      {catalog.items.length === 0 && (
+      {items.length === 0 && (
         <section className="empty-state">
           <p>{t(lang, "catalog.empty")}</p>
         </section>
       )}
 
-      {catalog.items.length > 0 && items.length === 0 && (
+      {items.length > 0 && filtered.length === 0 && (
         <section className="empty-state">
           <p>{t(lang, "catalog.noMatches", { query: query.trim() })}</p>
         </section>
       )}
 
       <ul className="product-grid">
-        {items.map((item) => {
+        {filtered.map((item) => {
           const price = fromPriceMinor(item);
           const currency = item.variants[0]?.currency ?? catalog.tenant.currency;
           const available = inStock(item);

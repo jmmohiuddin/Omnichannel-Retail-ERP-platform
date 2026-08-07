@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import {
   createProduct,
   createVariant,
@@ -6,9 +6,59 @@ import {
   type ProductDto,
   type Tracking,
 } from "../lib/api.js";
+import { accessToken } from "../lib/auth.js";
+import { API_BASE } from "../lib/config.js";
 import { decimalToMinor, formatMinor } from "../lib/money.js";
 import { useAsync } from "../lib/useAsync.js";
 import { useT } from "../lib/useT.js";
+
+/** Server-authored translation overlays, keyed by ISO-639 language code. */
+export interface ProductTranslationsMap {
+  [lang: string]: { name?: string; description?: string } | undefined;
+}
+
+/**
+ * Read the Arabic overlay off a product row without leaking `any`. The API
+ * returns `translations` as `{}` for legacy rows, so this returns partial
+ * strings that the form pre-fills with.
+ */
+export function readArabicOverlay(
+  translations: ProductTranslationsMap | undefined,
+): { name: string; description: string } {
+  const ar = translations?.ar ?? {};
+  return { name: ar.name ?? "", description: ar.description ?? "" };
+}
+
+async function saveProductTranslations(
+  productId: string,
+  lang: string,
+  patch: { name?: string; description?: string },
+): Promise<ProductTranslationsMap> {
+  const token = accessToken();
+  const res = await fetch(
+    `${API_BASE}/v1/products/${encodeURIComponent(productId)}/translations`,
+    {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ lang, ...patch }),
+    },
+  );
+  if (!res.ok) {
+    let msg = `Request failed (${res.status})`;
+    try {
+      const body = (await res.json()) as { error?: string; message?: string };
+      msg = body.message ?? body.error ?? msg;
+    } catch {
+      /* non-JSON body */
+    }
+    throw new Error(msg);
+  }
+  const body = (await res.json()) as { translations: ProductTranslationsMap };
+  return body.translations ?? {};
+}
 
 function CreateProductForm({ onCreated }: { onCreated: () => void }) {
   const { t, tEnum } = useT();
@@ -171,6 +221,110 @@ function AddVariantForm({ productId, onCreated }: { productId: string; onCreated
   );
 }
 
+function ArabicContentForm({
+  product,
+  onSaved,
+}: {
+  product: ProductDto;
+  onSaved: () => void;
+}) {
+  const { t } = useT();
+  const initial = readArabicOverlay(
+    (product as ProductDto & { translations?: ProductTranslationsMap }).translations,
+  );
+  const [name, setName] = useState(initial.name);
+  const [description, setDescription] = useState(initial.description);
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset when the row (or its translations) changes underneath us — the
+  // parent re-fetches after a save and we want to reflect what the server
+  // now has, not the pre-save draft.
+  useEffect(() => {
+    setName(initial.name);
+    setDescription(initial.description);
+    setSaved(false);
+    setError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product.id, initial.name, initial.description]);
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      // Only send fields the operator actually filled in; empty inputs mean
+      // "keep the English fallback" and shouldn't overwrite an existing
+      // translation with an empty string.
+      const patch: { name?: string; description?: string } = {};
+      const trimmedName = name.trim();
+      const trimmedDescription = description.trim();
+      if (trimmedName.length > 0) patch.name = trimmedName;
+      if (trimmedDescription.length > 0) patch.description = trimmedDescription;
+      if (patch.name === undefined && patch.description === undefined) {
+        setError(t("catalog.translations.failed"));
+        setBusy(false);
+        return;
+      }
+      await saveProductTranslations(product.id, "ar", patch);
+      setSaved(true);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("catalog.translations.failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <details className="variants" style={{ marginBlockStart: "var(--space-3)" }}>
+      <summary>{t("catalog.translations.title")}</summary>
+      <div className="sub-table">
+        <p className="subtle">{t("catalog.translations.hint")}</p>
+        {error && <div className="error-banner">{error}</div>}
+        {saved && !error && <p className="subtle">{t("catalog.translations.saved")}</p>}
+        <form className="panel" onSubmit={onSubmit}>
+          <div className="field" style={{ flex: 2 }}>
+            <label htmlFor={`ar-name-${product.id}`}>{t("catalog.translations.arName")}</label>
+            <input
+              id={`ar-name-${product.id}`}
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setSaved(false);
+              }}
+              dir="rtl"
+              lang="ar"
+              placeholder="اسم المنتج"
+            />
+          </div>
+          <div className="field" style={{ flex: 3 }}>
+            <label htmlFor={`ar-desc-${product.id}`}>
+              {t("catalog.translations.arDescription")}
+            </label>
+            <textarea
+              id={`ar-desc-${product.id}`}
+              value={description}
+              onChange={(e) => {
+                setDescription(e.target.value);
+                setSaved(false);
+              }}
+              dir="rtl"
+              lang="ar"
+              rows={3}
+            />
+          </div>
+          <button type="submit" disabled={busy}>
+            {busy ? t("catalog.translations.saving") : t("catalog.translations.save")}
+          </button>
+        </form>
+      </div>
+    </details>
+  );
+}
+
 function ProductRow({ product, onChanged }: { product: ProductDto; onChanged: () => void }) {
   const { t, tEnum } = useT();
   return (
@@ -221,6 +375,7 @@ function ProductRow({ product, onChanged }: { product: ProductDto; onChanged: ()
           </div>
         </div>
       </details>
+      <ArabicContentForm product={product} onSaved={onChanged} />
     </div>
   );
 }

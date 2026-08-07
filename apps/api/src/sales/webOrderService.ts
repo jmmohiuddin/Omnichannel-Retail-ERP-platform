@@ -34,13 +34,21 @@ export class WebOrderService {
     });
   }
 
-  async publicCatalog(tenantId: string, categorySlug?: string): Promise<unknown[]> {
+  async publicCatalog(
+    tenantId: string,
+    categorySlug?: string,
+    lang?: string,
+  ): Promise<unknown[]> {
     return this.db.withTenant(tenantId, async (c) => {
       const { rows } = await c.query<{
-        productId: string; variants: { id: string; priceMinor: number }[];
+        productId: string;
+        name: string;
+        description: string | null;
+        translations: Record<string, { name?: string; description?: string }> | null;
+        variants: { id: string; priceMinor: number }[];
       } & Record<string, unknown>>(
         `SELECT p.id AS "productId", p.name, p.slug, p.description, p.tracking,
-                p.seo,
+                p.seo, p.translations,
                 (SELECT json_build_object('name', cat.name, 'slug', cat.slug)
                    FROM category cat WHERE cat.id = p.category_id) AS category,
                 coalesce((SELECT json_agg(json_build_object(
@@ -77,6 +85,17 @@ export class WebOrderService {
             ...(eff.source === "promo" ? { listPriceMinor: eff.listPriceMinor } : {}),
           };
         });
+        // Optional language overlay: fall back to base fields when the tenant
+        // hasn't authored a translation for the requested language.
+        if (lang) {
+          const overlay = row.translations?.[lang];
+          if (overlay?.name && overlay.name.trim().length > 0) row.name = overlay.name;
+          if (overlay?.description && overlay.description.trim().length > 0) {
+            row.description = overlay.description;
+          }
+        }
+        // Never surface the raw translations map on the public API.
+        delete (row as Record<string, unknown>).translations;
       }
       return rows;
     });

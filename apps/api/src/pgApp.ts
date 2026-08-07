@@ -35,13 +35,19 @@ import { UnitService } from "./inventory/unitService.js";
 import { PurchasingError, PurchasingService } from "./purchasing/purchasingService.js";
 import { PricingService } from "./catalog/pricingService.js";
 import { GiftCardError, GiftCardService } from "./crm/giftCardService.js";
+import { StoreCreditError, StoreCreditService } from "./crm/storeCreditService.js";
+import { deepHealth } from "./observability/deepHealth.js";
+import { registerRateLimit } from "./observability/rateLimit.js";
 import { AiBudgetError, AiGateway, StubProvider } from "./ai/gateway.js";
 import { AnthropicProvider } from "./ai/anthropicProvider.js";
 import { generateDailyDigest } from "./ai/digest.js";
+import { CustomerAuthError, CustomerAuthService } from "./customer/customerAuthService.js";
 
 declare module "fastify" {
   interface FastifyRequest {
     auth: AccessClaims;
+    /** Populated only inside the storefront customer-session scope. */
+    customerId: string;
   }
 }
 
@@ -127,7 +133,9 @@ export function buildPgApp(config: PgAppConfig) {
   const loyalty = new LoyaltyService(db);
   const pricing = new PricingService(db);
   const giftCards = new GiftCardService(db);
-  const sales = new SalesService(db, inventory, loyalty, pricing, giftCards);
+  const storeCredit = new StoreCreditService(db);
+  const customerAuth = new CustomerAuthService(db);
+  const sales = new SalesService(db, inventory, loyalty, pricing, giftCards, storeCredit);
   const receiving = new ReceivingService(db, inventory);
   const units = new UnitService(db, inventory);
   const purchasing = new PurchasingService(db, receiving);
@@ -154,6 +162,9 @@ export function buildPgApp(config: PgAppConfig) {
   // Authorization header — no cookies — so a permissive dev origin is safe;
   // production pins origins via config.
   app.register(cors, { origin: true });
+  // Rate limit BEFORE routes so it wraps every path. /health is bypassed
+  // inside the plugin so load balancers and cron pings never trip a 429.
+  void registerRateLimit(app);
 
   app.addHook("onClose", async () => {
     await db.close();
@@ -232,6 +243,13 @@ export function buildPgApp(config: PgAppConfig) {
         : 400;
       return reply.code(status).send({ error: err.code, message: err.message });
     }
+    if (err instanceof StoreCreditError) {
+      const status =
+        err.code === "CUSTOMER_NOT_FOUND" || err.code === "ACCOUNT_NOT_FOUND" ? 404
+        : err.code === "BAD_AMOUNT" ? 400
+        : 422; // INSUFFICIENT_BALANCE
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
     if (err instanceof GiftCardError) {
       const status =
         err.code === "CARD_NOT_FOUND" ? 404
@@ -248,6 +266,12 @@ export function buildPgApp(config: PgAppConfig) {
       const status = err.code.endsWith("NOT_FOUND") ? 404 : 422;
       return reply.code(status).send({ error: err.code, message: err.message });
     }
+    if (err instanceof CustomerAuthError) {
+      // Every failure mode is client input in some sense (bad token, expired
+      // link, already-used link). 401 conveys "your credential is not valid"
+      // without leaking whether the email itself is known.
+      return reply.code(401).send({ error: err.code });
+    }
     if (err instanceof RefundError) {
       const status =
         err.code === "ORDER_NOT_FOUND" || err.code === "APPROVAL_NOT_FOUND" ? 404
@@ -262,6 +286,14 @@ export function buildPgApp(config: PgAppConfig) {
 
   // ---- public ----
   app.get("/health", async () => ({ status: "ok" }));
+
+  // Deep health: proves the app role has the exact privileges the security
+  // model rests on (non-superuser, no BYPASSRLS) and that migrations ran.
+  // 503 when anything is degraded; production monitors page on this.
+  app.get("/health/deep", async (_req, reply) => {
+    const result = await deepHealth(db);
+    return reply.code(result.status === "healthy" ? 200 : 503).send(result);
+  });
 
   app.post("/v1/auth/register", async (req, reply) => {
     const parsed = registerSchema.safeParse(req.body);
@@ -291,8 +323,15 @@ export function buildPgApp(config: PgAppConfig) {
     const { slug } = req.params as { slug: string };
     const tenant = await webOrders.resolveTenant(slug);
     if (!tenant) return reply.code(404).send({ error: "NOT_FOUND" });
-    const q = z.object({ category: z.string().max(80).optional() }).parse(req.query);
-    const items = await webOrders.publicCatalog(tenant.id, q.category);
+    const q = z
+      .object({
+        category: z.string().max(80).optional(),
+        // Loose match: any 2–5 char letter code; the service returns the
+        // English fallback when no overlay exists, so an unknown lang is safe.
+        lang: z.string().regex(/^[a-z]{2,5}$/i).optional(),
+      })
+      .parse(req.query);
+    const items = await webOrders.publicCatalog(tenant.id, q.category, q.lang?.toLowerCase());
     return { tenant: { name: tenant.name, slug, currency: tenant.currency }, items };
   });
 
@@ -351,6 +390,115 @@ export function buildPgApp(config: PgAppConfig) {
         throw err;
       }
       return payments.applyWebhook(gateway, event, req.body as string);
+    });
+  });
+
+  // ---- storefront customer accounts (passwordless magic link) ----
+  //
+  // Two public endpoints request/consume a magic link, then a session-scoped
+  // area lets a signed-in shopper read their own orders and serialized units.
+  // The scheme is `Authorization: CustomerSession <token>` — deliberately
+  // NOT `Bearer` — so an employee access token can never be misused against
+  // the shopper endpoints and vice versa.
+  //
+  // SEND_EMAIL toggle: in production, set process.env.SEND_EMAIL="1" so the
+  // request-link response no longer returns the raw token; delivery over
+  // email is out of scope for this iteration because we have no provider
+  // wired in — the toggle is the switch that hides devToken once one is.
+  const emailDelivery = process.env.SEND_EMAIL === "1";
+
+  app.post("/v1/public/:slug/customer/request-link", async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    const tenant = await webOrders.resolveTenant(slug);
+    if (!tenant) return reply.code(404).send({ error: "NOT_FOUND" });
+    const parsed = z
+      .object({ email: z.string().email().max(200) })
+      .safeParse(req.body);
+    if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+    const result = await customerAuth.requestLink(tenant.id, parsed.data.email);
+    if (emailDelivery) {
+      // Production shape: acknowledge without revealing whether the address
+      // was known and without echoing the token.
+      return reply.code(200).send({ ok: true });
+    }
+    return reply.code(200).send({ devToken: result.devToken });
+  });
+
+  app.post("/v1/public/:slug/customer/verify-link", async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    const tenant = await webOrders.resolveTenant(slug);
+    if (!tenant) return reply.code(404).send({ error: "NOT_FOUND" });
+    const parsed = z
+      .object({
+        email: z.string().email().max(200),
+        token: z.string().min(10).max(200),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+    const result = await customerAuth.verifyLink(
+      tenant.id, parsed.data.email, parsed.data.token,
+    );
+    return reply.code(200).send(result);
+  });
+
+  app.register(async (shopper) => {
+    // Bind the tenant from the URL and require a CustomerSession header. We
+    // avoid the "Bearer" scheme on purpose so an employee access token cannot
+    // be accepted here (and vice versa).
+    shopper.addHook("onRequest", async (req, reply) => {
+      const { slug } = req.params as { slug?: string };
+      const tenant = slug ? await webOrders.resolveTenant(slug) : undefined;
+      if (!tenant) return reply.code(404).send({ error: "NOT_FOUND" });
+      const header = req.headers.authorization ?? "";
+      const [scheme, token] = header.split(" ", 2);
+      if (scheme !== "CustomerSession" || !token) {
+        return reply.code(401).send({ error: "UNAUTHENTICATED" });
+      }
+      const resolved = await customerAuth.resolveSession(tenant.id, token);
+      if (!resolved) return reply.code(401).send({ error: "UNAUTHENTICATED" });
+      req.auth = { userId: resolved.customerId, tenantId: tenant.id, roles: [] };
+      req.customerId = resolved.customerId;
+    });
+
+    shopper.get("/v1/public/:slug/customer/orders", async (req) => {
+      const rows = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `SELECT id, order_no AS "orderNo", status,
+                  total_minor AS "totalMinor", currency,
+                  placed_at AS "placedAt"
+             FROM sales_order
+            WHERE customer_id = $1
+            ORDER BY placed_at DESC
+            LIMIT 100`,
+          [req.customerId],
+        );
+        return rows.map((r) => ({ ...r, totalMinor: Number(r.totalMinor) }));
+      });
+      return { items: rows };
+    });
+
+    shopper.get("/v1/public/:slug/customer/units", async (req) => {
+      const rows = await db.withTenant(req.auth.tenantId, async (c) => {
+        // My Devices: every serialized unit sold to this customer, with
+        // IMEI/SKU/product-name/warranty. Join through sales_order to enforce
+        // that the customer actually owns the sale (RLS already scopes to the
+        // tenant; this join scopes to the shopper).
+        const { rows } = await c.query(
+          `SELECT su.id, su.imei1, su.imei2, su.serial_no AS "serialNo",
+                  su.warranty_until AS "warrantyUntil",
+                  v.sku, p.name AS "productName",
+                  o.order_no AS "orderNo", o.placed_at AS "placedAt"
+             FROM stock_unit su
+             JOIN sales_order o ON o.id = su.sold_order_id
+             JOIN variant v ON v.id = su.variant_id
+             JOIN product p ON p.id = v.product_id
+            WHERE o.customer_id = $1
+            ORDER BY o.placed_at DESC, p.name`,
+          [req.customerId],
+        );
+        return rows;
+      });
+      return { items: rows };
     });
   });
 
@@ -740,7 +888,7 @@ export function buildPgApp(config: PgAppConfig) {
       const q = z.object({ query: z.string().trim().max(100).optional() }).parse(req.query);
       const rows = await db.withTenant(req.auth.tenantId, async (c) => {
         const { rows } = await c.query(
-          `SELECT p.id, p.name, p.slug, p.tracking, p.status,
+          `SELECT p.id, p.name, p.slug, p.tracking, p.status, p.translations,
                   coalesce(json_agg(json_build_object(
                     'id', v.id, 'sku', v.sku, 'barcode', v.barcode,
                     'priceMinor', v.price_minor, 'currency', v.currency
@@ -757,6 +905,47 @@ export function buildPgApp(config: PgAppConfig) {
         return rows;
       });
       return { items: rows };
+    });
+
+    // Per-tenant Arabic (or any-lang) content overlay for a product.
+    // Merges into the translations map so setting one field doesn't wipe
+    // sibling languages, and returns the merged map so the admin UI can
+    // refresh the row without re-fetching the whole catalog.
+    secured.put("/v1/products/:productId/translations", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      const { productId } = req.params as { productId: string };
+      const parsed = z
+        .object({
+          lang: z.string().regex(/^[a-z]{2,5}$/i).transform((v) => v.toLowerCase()),
+          name: z.string().trim().min(1).max(300).optional(),
+          description: z.string().trim().max(4000).optional(),
+        })
+        .refine((v) => v.name !== undefined || v.description !== undefined, {
+          message: "name or description required",
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      // Build a partial overlay for the requested language.
+      const overlay: Record<string, string> = {};
+      if (parsed.data.name !== undefined) overlay.name = parsed.data.name;
+      if (parsed.data.description !== undefined) overlay.description = parsed.data.description;
+      const res = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query<{ translations: Record<string, unknown> }>(
+          `UPDATE product
+              SET translations = translations
+                  || jsonb_build_object($2::text,
+                       coalesce(translations->$2, '{}'::jsonb) || $3::jsonb),
+                  updated_at = now()
+            WHERE id = $1
+            RETURNING translations`,
+          [productId, parsed.data.lang, JSON.stringify(overlay)],
+        );
+        return rows[0];
+      });
+      if (!res) return reply.code(404).send({ error: "NOT_FOUND" });
+      return { productId, translations: res.translations };
     });
 
     secured.get("/v1/categories", async (req) => {
@@ -1159,6 +1348,32 @@ export function buildPgApp(config: PgAppConfig) {
       return loyalty.balance(req.auth.tenantId, customerId);
     });
 
+    // Store credit: direct-money wallet attached to a customer. Issue is
+    // manager+ (goodwill / refund preference); balance is any authenticated
+    // employee (POS needs to see it before offering it as a tender).
+    secured.post("/v1/customers/:customerId/store-credit", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
+      const { customerId } = req.params as { customerId: string };
+      const parsed = z
+        .object({
+          amountMinor: z.number().int().positive(),
+          reason: z.string().min(3).max(300),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await storeCredit.issue(req.auth.tenantId, req.auth.userId, {
+        customerId, ...parsed.data,
+      });
+      return reply.code(201).send(result);
+    });
+
+    secured.get("/v1/customers/:customerId/store-credit", async (req) => {
+      const { customerId } = req.params as { customerId: string };
+      return storeCredit.balance(req.auth.tenantId, customerId);
+    });
+
     secured.post("/v1/pos/sales", async (req, reply) => {
       const parsed = z
         .object({
@@ -1181,7 +1396,7 @@ export function buildPgApp(config: PgAppConfig) {
           ).min(1),
           payments: z.array(
             z.object({
-              method: z.enum(["cash", "card", "loyalty_points", "gift_card"]),
+              method: z.enum(["cash", "card", "loyalty_points", "gift_card", "store_credit"]),
               amountMinor: z.number().int().positive(),
               giftCardCode: z.string().max(40).optional(),
             }),

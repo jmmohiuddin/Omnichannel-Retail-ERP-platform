@@ -66,9 +66,16 @@ async function errorFrom(res: Response): Promise<ApiError> {
   return new ApiError(res.status, code, code ?? `Request failed (${res.status})`);
 }
 
-/** Fetch a tenant's public catalog. Throws ApiError (404 for unknown slug). */
-export async function fetchCatalog(slug: string): Promise<Catalog> {
-  const res = await fetch(`${API_BASE}/v1/public/${encodeURIComponent(slug)}/catalog`);
+/**
+ * Fetch a tenant's public catalog. Passing `lang` opts in to the per-tenant
+ * translation overlay — the API returns `name`/`description` in the requested
+ * language when the tenant has authored them and falls back to English
+ * otherwise, so the caller never has to merge on the client.
+ * Throws ApiError (404 for unknown slug).
+ */
+export async function fetchCatalog(slug: string, lang?: string): Promise<Catalog> {
+  const qs = lang ? `?lang=${encodeURIComponent(lang)}` : "";
+  const res = await fetch(`${API_BASE}/v1/public/${encodeURIComponent(slug)}/catalog${qs}`);
   if (!res.ok) throw await errorFrom(res);
   return (await res.json()) as Catalog;
 }
@@ -110,4 +117,114 @@ export async function startPayment(slug: string, orderId: string): Promise<Payme
   );
   if (!res.ok) throw await errorFrom(res);
   return (await res.json()) as PaymentIntentResult;
+}
+
+// ---- Customer accounts (passwordless magic link) ------------------------
+
+export interface RequestLinkResult {
+  /** DEV ONLY — the server echoes the raw magic-link token because there is
+   *  no email provider configured yet. Production will return `{ok:true}`
+   *  instead (see the SEND_EMAIL toggle on the API). */
+  devToken?: string;
+  ok?: boolean;
+}
+
+export interface CustomerAccount {
+  id: string;
+  fullName: string;
+  email: string;
+}
+
+export interface VerifyLinkResult {
+  sessionToken: string;
+  customer: CustomerAccount;
+}
+
+export interface CustomerOrderSummary {
+  id: string;
+  orderNo: string;
+  status: string;
+  totalMinor: number;
+  currency: string;
+  placedAt: string;
+}
+
+export interface CustomerUnitSummary {
+  id: string;
+  imei1: string | null;
+  imei2: string | null;
+  serialNo: string | null;
+  sku: string;
+  productName: string;
+  warrantyUntil: string | null;
+  orderNo: string;
+  placedAt: string;
+}
+
+/** Request a magic link. Dev mode returns `devToken` in the response. */
+export async function requestCustomerLink(
+  slug: string,
+  email: string,
+): Promise<RequestLinkResult> {
+  const res = await fetch(
+    `${API_BASE}/v1/public/${encodeURIComponent(slug)}/customer/request-link`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    },
+  );
+  if (!res.ok) throw await errorFrom(res);
+  return (await res.json()) as RequestLinkResult;
+}
+
+/** Consume a magic link. Throws ApiError (401 with a specific code) on failure. */
+export async function verifyCustomerLink(
+  slug: string,
+  email: string,
+  token: string,
+): Promise<VerifyLinkResult> {
+  const res = await fetch(
+    `${API_BASE}/v1/public/${encodeURIComponent(slug)}/customer/verify-link`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, token }),
+    },
+  );
+  if (!res.ok) throw await errorFrom(res);
+  return (await res.json()) as VerifyLinkResult;
+}
+
+/**
+ * Build the CustomerSession header. Kept separate so tests can assert its
+ * exact shape (the scheme differs from the employee `Bearer` header on
+ * purpose — see the customer scope in pgApp.ts).
+ */
+export function customerAuthHeaders(sessionToken: string): Record<string, string> {
+  return { Authorization: `CustomerSession ${sessionToken}` };
+}
+
+export async function fetchCustomerOrders(
+  slug: string,
+  sessionToken: string,
+): Promise<CustomerOrderSummary[]> {
+  const res = await fetch(
+    `${API_BASE}/v1/public/${encodeURIComponent(slug)}/customer/orders`,
+    { headers: customerAuthHeaders(sessionToken) },
+  );
+  if (!res.ok) throw await errorFrom(res);
+  return ((await res.json()) as { items: CustomerOrderSummary[] }).items;
+}
+
+export async function fetchCustomerUnits(
+  slug: string,
+  sessionToken: string,
+): Promise<CustomerUnitSummary[]> {
+  const res = await fetch(
+    `${API_BASE}/v1/public/${encodeURIComponent(slug)}/customer/units`,
+    { headers: customerAuthHeaders(sessionToken) },
+  );
+  if (!res.ok) throw await errorFrom(res);
+  return ((await res.json()) as { items: CustomerUnitSummary[] }).items;
 }

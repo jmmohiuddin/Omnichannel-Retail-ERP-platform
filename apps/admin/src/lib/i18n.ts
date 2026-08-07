@@ -134,6 +134,14 @@ export const en = {
   "catalog.addVariant": "Add variant",
   "catalog.adding": "Adding…",
   "catalog.priceInvalid": "Price must be a positive AED amount with up to 2 decimals, e.g. 1299.00",
+  "catalog.translations.title": "Arabic content",
+  "catalog.translations.arName": "Arabic name",
+  "catalog.translations.arDescription": "Arabic description",
+  "catalog.translations.save": "Save Arabic content",
+  "catalog.translations.saving": "Saving…",
+  "catalog.translations.saved": "Arabic content saved.",
+  "catalog.translations.failed": "Failed to save Arabic content",
+  "catalog.translations.hint": "Leave blank to keep the English fallback.",
 
   // ---- inventory ----
   "inventory.location": "Location",
@@ -445,6 +453,14 @@ export const ar: Record<MessageKey, string> = {
   "catalog.adding": "جارٍ الإضافة…",
   "catalog.priceInvalid":
     "يجب أن يكون السعر مبلغًا موجبًا بالدرهم وبحد أقصى خانتين عشريتين، مثل 1299.00",
+  "catalog.translations.title": "المحتوى بالعربية",
+  "catalog.translations.arName": "اسم المنتج بالعربية",
+  "catalog.translations.arDescription": "وصف المنتج بالعربية",
+  "catalog.translations.save": "حفظ المحتوى بالعربية",
+  "catalog.translations.saving": "جارٍ الحفظ…",
+  "catalog.translations.saved": "تم حفظ المحتوى بالعربية.",
+  "catalog.translations.failed": "تعذّر حفظ المحتوى بالعربية",
+  "catalog.translations.hint": "اترك الحقل فارغًا للإبقاء على النص الإنجليزي.",
 
   // ---- inventory ----
   "inventory.location": "الموقع",

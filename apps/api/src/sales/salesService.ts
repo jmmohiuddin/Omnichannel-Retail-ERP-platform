@@ -19,6 +19,7 @@ import { PgInventoryService, translatePgError } from "../inventory/pgInventory.j
 import { LoyaltyService } from "../crm/loyaltyService.js";
 import { PricingService } from "../catalog/pricingService.js";
 import { GiftCardService } from "../crm/giftCardService.js";
+import { StoreCreditService } from "../crm/storeCreditService.js";
 
 export class SaleError extends Error {
   constructor(
@@ -61,7 +62,7 @@ export interface PosSaleInput {
   customerId?: string;
   lines: SaleLineInput[];
   payments: {
-    method: "cash" | "card" | "loyalty_points" | "gift_card";
+    method: "cash" | "card" | "loyalty_points" | "gift_card" | "store_credit";
     amountMinor: number;
     /** Required for gift_card payments. */
     giftCardCode?: string;
@@ -95,6 +96,7 @@ export class SalesService {
     private readonly loyalty: LoyaltyService,
     private readonly pricing: PricingService,
     private readonly giftCards: GiftCardService,
+    private readonly storeCredit: StoreCreditService,
   ) {}
 
   async createPosSale(
@@ -320,6 +322,23 @@ export class SalesService {
           }
           await this.giftCards.redeemWith(
             c, tenantId, payment.giftCardCode, input.id, payment.amountMinor,
+          );
+        }
+
+        // Store-credit tenders debit the customer's account, same discipline.
+        // Requires an attached customer since store credit is per-customer.
+        const storeCreditPaid = input.payments
+          .filter((p) => p.method === "store_credit")
+          .reduce((s, p) => s + p.amountMinor, 0);
+        if (storeCreditPaid > 0) {
+          if (!input.customerId) {
+            throw new SaleError(
+              "PAYMENT_MISMATCH",
+              "store_credit payment requires an attached customer",
+            );
+          }
+          await this.storeCredit.redeemWith(
+            c, tenantId, input.customerId, input.id, storeCreditPaid,
           );
         }
 
