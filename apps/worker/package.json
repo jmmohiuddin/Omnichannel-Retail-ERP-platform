@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@omniretail/connector-noon": "workspace:*",
+    "@omniretail/connector-salla": "workspace:*",
     "@omniretail/connector-sdk": "workspace:*",
+    "@omniretail/connector-zid": "workspace:*",
     "@omniretail/db": "workspace:*",
     "bullmq": "^5.34.0",
     "pg": "^8.13.0"

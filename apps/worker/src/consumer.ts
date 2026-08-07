@@ -7,6 +7,8 @@ import {
   type ConnectorHttp,
 } from "@omniretail/connector-sdk";
 import { noonConnector } from "@omniretail/connector-noon";
+import { sallaConnector } from "@omniretail/connector-salla";
+import { zidConnector } from "@omniretail/connector-zid";
 import { ChannelSyncService } from "./channelSync.js";
 import type { OutboxEvent } from "./relay.js";
 
@@ -36,8 +38,13 @@ const fetchHttp = (baseUrl: string, headers: Record<string, string>): ConnectorH
  * a `connector_state` table when order-import goes live.
  */
 export function startEventConsumer(pool: pg.Pool, redisUrl: string): Worker {
+  // Available connectors. A channel row's `connector` column selects one by
+  // key; none of them do anything until that tenant's credentials are stored
+  // (see docs/integrations/04-channel-onboarding.md).
   const registry = new ConnectorRegistry();
   registry.register(noonConnector);
+  registry.register(sallaConnector);
+  registry.register(zidConnector);
 
   const stateStores = new Map<string, MemoryStateStore>();
   const contextFor = (channel: { id: string; config: unknown }): ConnectorContext => {
