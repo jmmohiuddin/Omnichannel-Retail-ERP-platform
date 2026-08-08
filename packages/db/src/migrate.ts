@@ -13,6 +13,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 
+// Re-export the drift/verify helpers so `@omniretail/db` is a single entry.
+export {
+  verifyMigrationFiles,
+  verifyMigrationsApplied,
+  type FileCheck,
+  type DriftReport,
+} from "./verify.js";
+
 const here = dirname(fileURLToPath(import.meta.url));
 
 export async function migrate(databaseUrl: string, sqlDir?: string): Promise<string[]> {

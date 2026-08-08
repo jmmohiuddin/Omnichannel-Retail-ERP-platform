@@ -38,6 +38,21 @@ Apply migrations out-of-band or let the API do it at boot (it runs the migrator 
 DATABASE_URL=... node packages/db/dist/migrate.js
 ```
 
+**Migration drift guard (mandatory before a production deploy).** The API code and the
+target database can silently disagree — a committed feature references a table that was
+never migrated onto the deploy target. This once broke a live deployment. The guard:
+
+```bash
+ADMIN_DATABASE_URL=<direct, non-pooler URL> ./scripts/deploy-check.sh
+```
+
+It runs the static file check (`packages/db/dist/verify.js` — a clean gap-free 001..N
+sequence), applies any pending migrations, then asserts the applied set equals the `sql/`
+directory (`verify.js --applied`) — reporting drift in both directions: `behind` (a file
+not applied, deploy would break) and `unknown` (an applied row with no file, wrong DB or
+DB ahead of code). CI runs the same three checks against a fresh database on every push.
+Never `vercel deploy --prod` the API without this passing against the target Neon branch.
+
 ## 3. Processes & environment
 
 **API** (`apps/api`, N replicas behind a load balancer):

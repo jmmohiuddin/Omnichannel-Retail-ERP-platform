@@ -33,6 +33,21 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       - run: pnpm -r typecheck
+
+      # Migrations must apply cleanly from an empty database exactly as they
+      # would in production (standalone runner, not via a test's beforeAll),
+      # and the applied set must then match the sql/ directory with zero drift.
+      # This is the gate that guards against "code references a table that was
+      # never migrated onto the target" — the class of bug that once broke a
+      # live deploy silently.
+      - name: Migrate a fresh database + assert no drift
+        env:
+          DATABASE_URL: postgres://omniretail:ci@localhost:5432/omniretail_test
+        run: |
+          node packages/db/dist/verify.js            # static: clean 001..N sequence
+          node packages/db/dist/migrate.js           # apply from empty
+          node packages/db/dist/verify.js --applied  # dynamic: files == applied
+
       - name: Test (unit + Postgres integration)
         env:
           ADMIN_DATABASE_URL: postgres://omniretail:ci@localhost:5432/omniretail_test
