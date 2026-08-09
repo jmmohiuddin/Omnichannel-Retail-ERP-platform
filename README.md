@@ -61,6 +61,7 @@ The API expects PostgreSQL 16+; apply migrations in `packages/db/sql/` in order.
 
 | Doc | Contents |
 | --- | --- |
+| [docs/00-product-technical-master-document.md](docs/00-product-technical-master-document.md) | **Single source of truth** — full product+technical audit, gaps, debt, risk, roadmap |
 | [docs/01-executive-summary.md](docs/01-executive-summary.md) | What we're building and why |
 | [docs/02-architecture.md](docs/02-architecture.md) | System architecture, deployment, data flow |
 | [docs/03-database-schema.md](docs/03-database-schema.md) | Schema design narrative + ER description |
