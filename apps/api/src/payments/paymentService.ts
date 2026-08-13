@@ -96,19 +96,10 @@ export class PaymentService {
     event: GatewayWebhookEvent,
     rawBody: string,
   ): Promise<{ duplicate?: boolean; orderId?: string; result?: string }> {
-    // Dedupe first — platform scope (webhook_delivery carries no tenant).
-    const inserted = await this.db.withPlatform((c) =>
-      c.query(
-        `INSERT INTO webhook_delivery (gateway, external_id, payload)
-         VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-        [gatewayKey, event.externalId, rawBody],
-      ),
-    );
-    if (inserted.rowCount === 0) return { duplicate: true };
-
-    // Find the intent. The webhook names no tenant, so this SELECT opts into
-    // the transaction-local webhook_lookup policy (016) — the intent row is
-    // what resolves gateway_ref → tenant.
+    // Resolve the intent FIRST. The webhook names no tenant, so this SELECT
+    // opts into the transaction-local webhook_lookup policy (016) — the intent
+    // row is what resolves gateway_ref → tenant. Read-only, so it is safe to
+    // repeat on a retry.
     const found = await this.db.withPlatform(async (c) => {
       await c.query("SELECT set_config('app.webhook_lookup', 'on', true)");
       return c.query<{ id: string; tenant_id: string; order_id: string; status: string }>(
@@ -118,9 +109,27 @@ export class PaymentService {
       );
     });
     const intent = found.rows[0];
-    if (!intent) return { result: "intent_not_found" }; // acknowledged; investigated via ops
+    if (!intent) {
+      // Deliberately NOT recorded as delivered. A webhook can outrun the
+      // transaction that creates its intent; marking it done here would make
+      // the gateway's retry a no-op and strand the payment forever. Retrying
+      // an unknown event is cheap; losing a captured one is not.
+      return { result: "intent_not_found" };
+    }
 
+    // Dedupe and effect in ONE transaction. Previously the dedupe row was
+    // committed in its own transaction before the effect ran in another, so a
+    // failure in between left the delivery marked processed and the payment
+    // never applied — the gateway's retry then returned `duplicate: true` and
+    // the money was silently lost. Rolling back now discards both together.
     return this.db.withTenant(intent.tenant_id, async (c) => {
+      const inserted = await c.query(
+        `INSERT INTO webhook_delivery (gateway, external_id, payload)
+         VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+        [gatewayKey, event.externalId, rawBody],
+      );
+      if (inserted.rowCount === 0) return { duplicate: true };
+
       if (intent.status === "succeeded" || intent.status === "failed") {
         return { orderId: intent.order_id, result: "already_final" };
       }
