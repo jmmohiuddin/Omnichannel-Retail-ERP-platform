@@ -592,6 +592,21 @@ body {
   font-weight: 600;
 }
 
+/* Supplier legal name — sits under the document type, never replacing it. */
+.receipt-seller {
+  font-weight: 600;
+}
+
+/*
+ * Issue date. Always LTR: dates, like prices and identifiers, stay in Western
+ * digits and left-to-right order even inside the Arabic layout.
+ */
+.receipt-issued {
+  direction: ltr;
+  unicode-bidi: isolate;
+  font-variant-numeric: tabular-nums;
+}
+
 .offline-note {
   color: var(--warning);
 }

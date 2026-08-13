@@ -128,6 +128,9 @@ export const en = {
   // Receipt modal
   "receipt.aria": "Receipt",
   "receipt.taxInvoice": "Tax Invoice",
+  // Used when no supplier TRN backs the document, so it is not a tax invoice.
+  // Naming it honestly is a legal requirement, not a wording preference.
+  "receipt.saleRecord": "Sale Record",
   "receipt.trn": "TRN: {trn}",
   "receipt.orderNo": "Order {orderNo}",
   "receipt.offlineSaved": "Saved offline — will sync when back online",
@@ -238,6 +241,7 @@ export const ar: Record<MessageKey, string> = {
 
   "receipt.aria": "الإيصال",
   "receipt.taxInvoice": "فاتورة ضريبية",
+  "receipt.saleRecord": "سجل بيع",
   "receipt.trn": "الرقم الضريبي: {trn}",
   "receipt.orderNo": "رقم الطلب {orderNo}",
   "receipt.offlineSaved": "حُفظت دون اتصال — ستتم المزامنة عند عودة الاتصال",

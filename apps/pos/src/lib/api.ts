@@ -125,28 +125,46 @@ export interface SaleResult {
   };
 }
 
+/**
+ * One line of the server receipt. Mirrors `SalesService.receipt()` exactly —
+ * the field is `description`, not `name`/`sku`. Getting this wrong is not a
+ * cosmetic bug: a tax invoice must carry a description of the goods, and the
+ * previous mismatched type made every line render as the word "Item".
+ */
 export interface ReceiptLine {
-  name?: string;
-  sku?: string;
+  description: string;
   quantity?: number;
   unitPriceMinor?: number;
-  totalMinor?: number;
+  discountMinor?: number;
   taxMinor?: number;
+  totalMinor?: number;
 }
 
-/** Receipt JSON — rendered defensively; fields the server omits are skipped. */
+/**
+ * Receipt JSON as `GET /v1/orders/:orderId/receipt` actually returns it.
+ *
+ * The seller block is nested under `seller`; it is NOT `tenantName`/`trn` at the
+ * top level. The earlier declaration claimed the flat shape, so `receipt.trn`
+ * was always `undefined` and the renderer's `|| "100000000000000"` fallback
+ * printed a fabricated TRN on every receipt.
+ */
 export interface Receipt {
-  tenantName?: string;
-  trn?: string;
+  kind?: string;
+  seller?: { name?: string; trn?: string | null };
+  location?: { name?: string; code?: string };
+  cashier?: string;
   orderNo?: string;
   issuedAt?: string;
+  currency?: string;
+  vatRateBp?: number;
   lines?: ReceiptLine[];
   totals?: {
     subtotalMinor?: number;
+    discountMinor?: number;
     taxMinor?: number;
     totalMinor?: number;
-    currency?: string;
   };
+  payments?: Array<{ method: string; amountMinor: number }>;
   [key: string]: unknown;
 }
 
