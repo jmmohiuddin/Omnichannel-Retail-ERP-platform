@@ -123,6 +123,19 @@ describe.skipIf(!run)("serialized sales and refunds", () => {
     expect(res.json()).toMatchObject({ id: unitA, sku: "PZ-1", state: "in_stock" });
   });
 
+  it("returns priceMinor as a number, not the string pg gives for BIGINT", async () => {
+    // Regression, found by scanning a real IMEI in a real browser: findUnit
+    // returned the row uncoerced, so the POS got "419900", formatMinor threw,
+    // and the sale screen unmounted — a blank till on every IMEI scan.
+    const res = await app.inject({
+      url: `/v1/stock-units?imei=${IMEI_A}`,
+      headers: authed(cashierToken),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(typeof res.json().priceMinor).toBe("number");
+    expect(res.json().priceMinor).toBe(210000);
+  });
+
   it("refuses to sell a serialized variant without a scanned unit", async () => {
     const res = await post(cashierToken, "/v1/pos/sales", {
       id: randomUUID(), deviceId, locationId,

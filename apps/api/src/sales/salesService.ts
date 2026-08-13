@@ -425,9 +425,19 @@ export class SalesService {
       );
       const head = order.rows[0];
       if (!head) return undefined;
+      // The IMEI is joined, not omitted: it is the customer's warranty proof and
+      // the shop's defence in a dispute, and R2.8 requires it on the receipt and
+      // the tax invoice. The line already carries `stock_unit_id`; nothing was
+      // reading it, so a serialised sale printed paper that could not identify
+      // the handset it was for.
       const { rows: lines } = await c.query(
-        `SELECT description, quantity, unit_price_minor, discount_minor, tax_minor, total_minor
-           FROM sales_order_line WHERE order_id = $1 ORDER BY description`,
+        `SELECT l.description, l.quantity, l.unit_price_minor, l.discount_minor,
+                l.tax_minor, l.total_minor,
+                su.imei1, su.imei2, su.serial_no AS serial_no,
+                su.warranty_until
+           FROM sales_order_line l
+           LEFT JOIN stock_unit su ON su.id = l.stock_unit_id
+          WHERE l.order_id = $1 ORDER BY l.description`,
         [orderId],
       );
       const { rows: payments } = await c.query(
@@ -450,6 +460,12 @@ export class SalesService {
           discountMinor: Number(l.discount_minor),
           taxMinor: Number(l.tax_minor),
           totalMinor: Number(l.total_minor),
+          // Present only on serialised lines; omitted rather than null so the
+          // renderer can treat absence as "not a serialised item".
+          ...(l.imei1 ? { imei: l.imei1 as string } : {}),
+          ...(l.imei2 ? { imei2: l.imei2 as string } : {}),
+          ...(l.serial_no ? { serialNo: l.serial_no as string } : {}),
+          ...(l.warranty_until ? { warrantyUntil: l.warranty_until as Date } : {}),
         })),
         totals: {
           subtotalMinor: Number(head.subtotal_minor),

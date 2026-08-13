@@ -43,6 +43,23 @@ export interface ReceiptDocumentLine {
   totalMinor: number;
 }
 
+/**
+ * Net of VAT, derived rather than read from a field.
+ *
+ * `subtotalMinor` means two different things on the two sides of the wire: the
+ * domain's `saleTotals` returns the VAT-INCLUSIVE gross under that name (it
+ * exposes the net separately as `netMinor`, which the server does not persist
+ * or send), while the POS cart uses the same name for the net. Rendering the
+ * server's value under an "excl. VAT" label therefore printed the gross —
+ * a receipt that contradicted its own arithmetic, since total − VAT ≠ subtotal.
+ *
+ * Deriving it is exact: these are integer minor units, so there is no rounding
+ * to lose, and it cannot drift from whatever the field happens to mean.
+ */
+function netOfVat(totalMinor: number, taxMinor: number): number {
+  return totalMinor - taxMinor;
+}
+
 export interface ReceiptDocument {
   /**
    * `tax_invoice` only when the supplier TRN is present and well-formed.
@@ -89,7 +106,7 @@ export function buildReceiptDocument(completed: CompletedSale): ReceiptDocument 
       currency: completed.currency,
       lines: cartLines(completed.lines),
       totals: {
-        subtotalMinor: completed.totals.subtotalMinor,
+        subtotalMinor: netOfVat(completed.totals.totalMinor, completed.totals.taxMinor),
         taxMinor: completed.totals.taxMinor,
         totalMinor: completed.totals.totalMinor,
       },
@@ -113,16 +130,21 @@ export function buildReceiptDocument(completed: CompletedSale): ReceiptDocument 
       receipt?.lines && receipt.lines.length > 0
         ? receipt.lines.map((l, i) => ({
             key: `r${i}`,
-            description: l.description,
+            // The server now joins the bound unit, so a reprinted receipt
+            // identifies the exact handset it was issued for.
+            description:
+              l.imei !== undefined || l.serialNo !== undefined
+                ? `${l.description} — ${l.imei !== undefined ? `IMEI ${l.imei}` : `S/N ${l.serialNo}`}`
+                : l.description,
             quantity: positiveInt(l.quantity, 1),
             totalMinor: positiveInt(l.totalMinor, positiveInt(l.unitPriceMinor, 0) * positiveInt(l.quantity, 1)),
           }))
         : cartLines(completed.lines),
-    totals: {
-      subtotalMinor: positiveInt(receipt?.totals?.subtotalMinor, sale.totals.subtotalMinor),
-      taxMinor: positiveInt(receipt?.totals?.taxMinor, sale.totals.taxMinor),
-      totalMinor: positiveInt(receipt?.totals?.totalMinor, sale.totals.totalMinor),
-    },
+    totals: (() => {
+      const taxMinor = positiveInt(receipt?.totals?.taxMinor, sale.totals.taxMinor);
+      const totalMinor = positiveInt(receipt?.totals?.totalMinor, sale.totals.totalMinor);
+      return { subtotalMinor: netOfVat(totalMinor, taxMinor), taxMinor, totalMinor };
+    })(),
     payments: completed.payments,
   };
 }

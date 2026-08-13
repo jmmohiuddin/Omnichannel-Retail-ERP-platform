@@ -163,3 +163,87 @@ describe("buildReceiptDocument — degraded fetch", () => {
     expect(doc.orderNo).toBe("SO-000123");
   });
 });
+
+describe("buildReceiptDocument — the subtotal is net of VAT", () => {
+  it("derives net from total − tax rather than trusting `subtotalMinor`", () => {
+    // Regression, found by driving the real POS against the real API. The
+    // domain's `saleTotals` returns the VAT-INCLUSIVE gross under the name
+    // `subtotalMinor`; the receipt rendered it beneath an "excl. VAT" label, so
+    // a sale of AED 89.00 printed subtotal 89.00, VAT 4.24, total 89.00 — a tax
+    // document contradicting its own arithmetic.
+    const doc = buildReceiptDocument(
+      onlineSale(
+        serverReceipt({
+          totals: { subtotalMinor: 8900, discountMinor: 0, taxMinor: 424, totalMinor: 8900 },
+        }),
+      ),
+    );
+    expect(doc.totals.subtotalMinor).toBe(8476);
+    expect(doc.totals.taxMinor).toBe(424);
+    expect(doc.totals.totalMinor).toBe(8900);
+  });
+
+  it("keeps subtotal + VAT === total, which is what makes it a valid document", () => {
+    const doc = buildReceiptDocument(onlineSale(serverReceipt()));
+    expect(doc.totals.subtotalMinor + doc.totals.taxMinor).toBe(doc.totals.totalMinor);
+  });
+
+  it("holds for an offline sale too", () => {
+    const doc = buildReceiptDocument({
+      mode: "offline",
+      saleId: "uuid-net",
+      totals: { subtotalMinor: 999999, taxMinor: 424, totalMinor: 8900, itemCount: 1 },
+      lines: [cartLine],
+      payments,
+      currency: "AED",
+    });
+    // The bogus subtotalMinor above is ignored entirely.
+    expect(doc.totals.subtotalMinor).toBe(8476);
+    expect(doc.totals.subtotalMinor + doc.totals.taxMinor).toBe(doc.totals.totalMinor);
+  });
+});
+
+describe("buildReceiptDocument — the IMEI reaches the paper (R2.8)", () => {
+  it("appends the IMEI to a serialised line", () => {
+    // Regression: the server receipt selected only `description`, so a reprinted
+    // receipt for a phone could not identify which handset it was issued for —
+    // the customer's warranty proof and the shop's dispute defence.
+    const doc = buildReceiptDocument(
+      onlineSale(
+        serverReceipt({
+          lines: [
+            {
+              description: "Phone Pro 256GB (PP-256)",
+              quantity: 1,
+              totalMinor: 419900,
+              imei: "351000000000005",
+            },
+          ],
+        }),
+      ),
+    );
+    expect(doc.lines[0]?.description).toBe("Phone Pro 256GB (PP-256) — IMEI 351000000000005");
+  });
+
+  it("falls back to the serial number when there is no IMEI", () => {
+    const doc = buildReceiptDocument(
+      onlineSale(
+        serverReceipt({
+          lines: [{ description: "Laptop", quantity: 1, totalMinor: 500000, serialNo: "SN-42" }],
+        }),
+      ),
+    );
+    expect(doc.lines[0]?.description).toBe("Laptop — S/N SN-42");
+  });
+
+  it("leaves a non-serialised line untouched", () => {
+    const doc = buildReceiptDocument(
+      onlineSale(
+        serverReceipt({
+          lines: [{ description: "Charger 30W (CH-30W)", quantity: 1, totalMinor: 8900 }],
+        }),
+      ),
+    );
+    expect(doc.lines[0]?.description).toBe("Charger 30W (CH-30W)");
+  });
+});

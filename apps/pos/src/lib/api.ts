@@ -74,6 +74,24 @@ export interface StockUnit {
   productName: string;
 }
 
+/**
+ * Money as an integer, whatever the wire produced.
+ *
+ * Postgres serialises BIGINT as a string to protect precision, and a service
+ * that forgets to coerce sends `"419900"`. That reached `formatMinor`, which
+ * correctly refuses a non-integer, and the exception unmounted the whole sale
+ * screen — a blank till mid-transaction. The server is fixed, but a bad price
+ * must never again be able to take the register down, so the value is
+ * normalised here as well.
+ */
+export function toMinor(value: unknown): number {
+  const n = typeof value === "string" ? Number(value) : value;
+  if (typeof n !== "number" || !Number.isFinite(n) || !Number.isInteger(n)) {
+    throw new TypeError(`expected integer minor units, got ${JSON.stringify(value)}`);
+  }
+  return n;
+}
+
 export interface CustomerSummary {
   id: string;
   fullName: string;
@@ -138,6 +156,11 @@ export interface ReceiptLine {
   discountMinor?: number;
   taxMinor?: number;
   totalMinor?: number;
+  /** Serialised lines only — the customer's warranty proof (R2.8). */
+  imei?: string;
+  imei2?: string;
+  serialNo?: string;
+  warrantyUntil?: string;
 }
 
 /**
@@ -178,7 +201,10 @@ export function apiErrorMessage(err: unknown, fallback: string): string {
   const body = err.body;
   if (body === null || typeof body !== "object") return fallback;
   const record = body as Record<string, unknown>;
-  if (typeof record.error === "string" && record.error.length > 0) return record.error;
+  // `message` only. This used to return `record.error` first — but in the shape
+  // the API actually sends, `{ error: "NO_OPEN_CASH_SESSION", message: "…" }`,
+  // `error` is the machine code. The cashier was shown the token instead of the
+  // sentence, and the caller's localized fallback never got a chance either.
   for (const candidate of [record, record.error]) {
     if (candidate !== null && typeof candidate === "object") {
       const message = (candidate as Record<string, unknown>).message;
@@ -194,6 +220,11 @@ export function apiErrorCode(err: unknown): string | null {
   const body = err.body;
   if (body === null || typeof body !== "object") return null;
   const record = body as Record<string, unknown>;
+  // The API's own shape is `{ error: "CODE", message: "…" }`, so a bare string
+  // in `error` IS the code. Omitting this made `apiErrorCode` return null for
+  // every real server error, which silently disabled the INSUFFICIENT_POINTS
+  // branch that refreshes the loyalty balance.
+  if (typeof record.error === "string" && record.error.length > 0) return record.error;
   for (const candidate of [record, record.error]) {
     if (candidate !== null && typeof candidate === "object") {
       const code = (candidate as Record<string, unknown>).code;
