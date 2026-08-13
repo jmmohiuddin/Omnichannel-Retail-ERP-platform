@@ -866,7 +866,11 @@ export function buildPgApp(config: PgAppConfig) {
         .object({
           amountMinor: z.number().int().positive(),
           reason: z.string().min(3).max(500),
-          method: z.enum(["cash", "card"]),
+          // Must match a tender actually captured on the order, or be store
+          // credit — the sanctioned fallback when the original cannot be
+          // reversed (R6.4). Enforced in RefundService, not here, because it
+          // depends on the order.
+          method: z.enum(["cash", "card", "store_credit"]),
           restock: z.array(
             z.object({
               variantId: z.string().uuid(),
