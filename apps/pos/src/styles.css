@@ -266,6 +266,17 @@ body {
   color: #14100a;
 }
 
+/*
+ * A refused sale, unlike a queued one, is not a waiting state — the money is
+ * taken and the goods are gone. Amber says "in hand"; this needs to say
+ * "something is wrong", so it takes the danger colour.
+ */
+.badge-rejected {
+  background: var(--danger);
+  color: #fff;
+  font-weight: 700;
+}
+
 .pos-body {
   flex: 1;
   display: grid;

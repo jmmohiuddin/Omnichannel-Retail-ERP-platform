@@ -52,6 +52,8 @@ export const en = {
 
   // Top bar
   "topbar.pendingSync": "{count} pending sync",
+  "topbar.rejectedSync": "{count} rejected",
+  "topbar.rejectedSyncTitle": "Sales the server refused. Money was taken — settle each one with a manager.",
   "topbar.pendingSyncTitle": "Sales saved offline, waiting to sync",
 
   // Scan input
@@ -174,6 +176,8 @@ export const ar: Record<MessageKey, string> = {
   "location.none": "لا توجد فروع لهذا المتجر — أنشئ فرعاً من لوحة الإدارة أولاً.",
 
   "topbar.pendingSync": "{count} بانتظار المزامنة",
+  "topbar.rejectedSync": "{count} مرفوضة",
+  "topbar.rejectedSyncTitle": "عمليات بيع رفضها الخادم. تم استلام المبلغ — سوّها مع المدير.",
   "topbar.pendingSyncTitle": "مبيعات محفوظة دون اتصال، بانتظار المزامنة",
 
   "scan.placeholder": "امسح الباركود أو اكتب رمز الصنف (SKU) ثم اضغط Enter",

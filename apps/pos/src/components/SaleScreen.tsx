@@ -62,6 +62,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
   const [results, setResults] = useState<ProductSummary[]>([]);
   const [searching, setSearching] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const [rejectedCount, setRejectedCount] = useState(0);
   const [tendering, setTendering] = useState<TenderMethod | null>(null);
   const [saleError, setSaleError] = useState<Notice | null>(null);
   const [completed, setCompleted] = useState<CompletedSale | null>(null);
@@ -92,7 +93,14 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
     void refreshLoyalty();
   }, [refreshLoyalty]);
 
-  useEffect(() => queue.subscribe(setPendingCount), [queue]);
+  useEffect(
+    () =>
+      queue.subscribe((counts) => {
+        setPendingCount(counts.pending);
+        setRejectedCount(counts.rejected);
+      }),
+    [queue],
+  );
 
   // Debounced product search.
   useEffect(() => {
@@ -305,6 +313,19 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
         {pendingCount > 0 && (
           <span className="badge badge-pending" title={t("topbar.pendingSyncTitle")}>
             {t("topbar.pendingSync", { count: pendingCount })}
+          </span>
+        )}
+        {/*
+          A refused sale is money already taken for goods already gone. It stays
+          on screen until someone settles it — critical, not informational.
+        */}
+        {rejectedCount > 0 && (
+          <span
+            className="badge badge-rejected"
+            role="alert"
+            title={t("topbar.rejectedSyncTitle")}
+          >
+            {t("topbar.rejectedSync", { count: rejectedCount })}
           </span>
         )}
         <LangToggle />

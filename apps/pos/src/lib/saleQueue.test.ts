@@ -142,7 +142,7 @@ describe("SaleQueue", () => {
     expect(queue.pending()[0]!.attempts).toBe(1);
   });
 
-  it("flush drops 4xx-rejected sales and reports them via onRejected", async () => {
+  it("flush takes a 4xx sale off the retry queue, retains it, and reports it", async () => {
     const onRejected = vi.fn();
     const { queue } = makeQueue({ onRejected });
     queue.enqueue(salePayload("s-bad"));
@@ -156,6 +156,9 @@ describe("SaleQueue", () => {
     expect(onRejected).toHaveBeenCalledTimes(1);
     expect(onRejected.mock.calls[0]![0].payload.id).toBe("s-bad");
     expect(onRejected.mock.calls[0]![1]).toBeInstanceOf(ApiError);
+    // It leaves the retry queue but NOT the device: retrying identical bytes
+    // cannot help, while deleting it would lose a sale already paid for.
+    expect(queue.rejected().map((r) => r.payload.id)).toEqual(["s-bad"]);
   });
 
   it("flush keeps sales queued on 5xx for a later retry", async () => {
@@ -173,12 +176,130 @@ describe("SaleQueue", () => {
     fetchMock.mockRejectedValueOnce(new TypeError("offline"));
     const { queue } = makeQueue();
     const counts: number[] = [];
-    queue.subscribe((n) => counts.push(n));
+    queue.subscribe((c) => counts.push(c.pending));
 
     await queue.submit(salePayload("s-1"));
     fetchMock.mockResolvedValueOnce(okResponse());
     await queue.flush();
 
     expect(counts).toEqual([0, 1, 0]);
+  });
+});
+
+/**
+ * A refused sale must never disappear.
+ *
+ * The queue used to delete a 4xx sale and report it only through an optional
+ * `onRejected` callback — which the app never supplied. By the time an offline
+ * sale replays, the cashier has taken the money and the customer has walked out
+ * with the goods, so a silent delete is an unrecorded loss. These pin the
+ * retention that replaces it.
+ */
+describe("SaleQueue — rejected sales are retained, never dropped", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function makeQueue(storage = memoryStorage()) {
+    const api = createApiClient(() => "token");
+    const queue = new SaleQueue({ storage, post: (p) => api.submitSale(p) });
+    return { queue, storage };
+  }
+
+  async function queueThenReject(status: number) {
+    const { queue, storage } = makeQueue();
+    fetchMock.mockRejectedValueOnce(new TypeError("offline"));
+    await queue.submit(salePayload("s-rej"));
+    fetchMock.mockResolvedValueOnce(errorResponse(status));
+    const report = await queue.flush();
+    return { queue, storage, report };
+  }
+
+  it("moves a 4xx sale to the rejected list instead of deleting it", async () => {
+    const { queue, report } = await queueThenReject(422);
+
+    expect(report.rejected).toBe(1);
+    expect(queue.pendingCount()).toBe(0);
+    // The regression: this used to be 0 and the sale was gone.
+    expect(queue.rejectedCount()).toBe(1);
+    expect(queue.rejected()[0]!.payload.id).toBe("s-rej");
+    expect(queue.rejected()[0]!.status).toBe(422);
+  });
+
+  it("keeps the rejected sale in storage, so it survives a reload", async () => {
+    const { storage } = await queueThenReject(409);
+
+    // A fresh queue over the same storage still sees it.
+    const api = createApiClient(() => "token");
+    const reopened = new SaleQueue({ storage, post: (p) => api.submitSale(p) });
+    expect(reopened.rejectedCount()).toBe(1);
+    expect(reopened.rejected()[0]!.payload.id).toBe("s-rej");
+  });
+
+  it("retains it even when no onRejected callback is supplied", async () => {
+    // Exactly the app's configuration — the callback was never wired.
+    const { queue } = await queueThenReject(400);
+    expect(queue.rejectedCount()).toBe(1);
+  });
+
+  it("reports rejected count to subscribers", async () => {
+    const { queue } = makeQueue();
+    const seen: { pending: number; rejected: number }[] = [];
+    queue.subscribe((c) => seen.push({ ...c }));
+
+    fetchMock.mockRejectedValueOnce(new TypeError("offline"));
+    await queue.submit(salePayload("s-rej"));
+    fetchMock.mockResolvedValueOnce(errorResponse(422));
+    await queue.flush();
+
+    expect(seen.at(-1)).toEqual({ pending: 0, rejected: 1 });
+  });
+
+  it("clears one only when explicitly resolved", async () => {
+    const { queue } = await queueThenReject(422);
+
+    expect(queue.resolveRejected("nope")).toBe(false);
+    expect(queue.rejectedCount()).toBe(1);
+
+    expect(queue.resolveRejected("s-rej")).toBe(true);
+    expect(queue.rejectedCount()).toBe(0);
+  });
+
+  it("does not duplicate a rejected sale if it is seen twice", async () => {
+    const { queue, storage } = await queueThenReject(422);
+    // Re-queue the same id and have it refused again.
+    queue.enqueue(salePayload("s-rej"));
+    fetchMock.mockResolvedValueOnce(errorResponse(422));
+    await queue.flush();
+    expect(queue.rejectedCount()).toBe(1);
+    expect(storage.dump().size).toBeGreaterThan(0);
+  });
+
+  it("survives storage refusing a write instead of failing the tender", async () => {
+    // A full quota threw straight out of the tender path and took the till down.
+    const full: QueueStorage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new DOMException("full", "QuotaExceededError");
+      },
+      removeItem: () => {},
+    };
+    const spilled: unknown[] = [];
+    const api = createApiClient(() => "token");
+    const queue = new SaleQueue({
+      storage: full,
+      post: (p) => api.submitSale(p),
+      onStorageFull: (e) => spilled.push(e),
+    });
+
+    fetchMock.mockRejectedValueOnce(new TypeError("offline"));
+    await expect(queue.submit(salePayload("s-full"))).resolves.toMatchObject({ status: "queued" });
+    expect(spilled).toHaveLength(1);
   });
 });
