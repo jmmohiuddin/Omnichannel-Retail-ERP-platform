@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isPgError, type Db } from "../db.js";
+import { PgInventoryService } from "../inventory/pgInventory.js";
 import type { CourierPort, ShipmentStatus, TrackingEvent } from "./courierPort.js";
 
 export class ShippingError extends Error {
@@ -52,6 +53,7 @@ export class ShippingService {
   constructor(
     private readonly db: Db,
     private readonly couriers: Map<string, CourierPort>,
+    private readonly inventory: PgInventoryService = new PgInventoryService(db),
   ) {}
 
   private courierFor(key: string): CourierPort {
@@ -152,8 +154,10 @@ export class ShippingService {
     return this.db.withTenant(tenantId, async (c) => {
       const found = await c.query<{
         order_id: string; courier: string; tracking_no: string; status: ShipmentStatus;
+        created_by: string;
       }>(
-        "SELECT order_id, courier, tracking_no, status FROM shipment WHERE id = $1 FOR UPDATE",
+        `SELECT order_id, courier, tracking_no, status, created_by
+           FROM shipment WHERE id = $1 FOR UPDATE`,
         [shipmentId],
       );
       const shipment = found.rows[0];
@@ -202,9 +206,90 @@ export class ShippingService {
                               trackingNo: shipment.tracking_no })],
           );
         }
+
+        // RTO: the goods physically came back. Fulfilment posted a `sale`
+        // movement out of the ledger and marked any serialized unit `sold`;
+        // without reversing both, returned stock simply vanished — and in a
+        // market that is ~71% cash on delivery, every refused delivery lost
+        // its stock permanently.
+        //
+        // Only `returned` triggers this. `failed` is a failed *attempt*, which
+        // the courier may retry; the goods are still out with them.
+        if (tracking.status === "returned") {
+          await this.restockReturnToOrigin(
+            c, tenantId, shipment.order_id, shipmentId, shipment.created_by,
+          );
+        }
       }
       return { shipmentId, status: tracking.status, appendedEvents: appended };
     });
+  }
+
+  /**
+   * Bring an RTO shipment's goods back into the ledger.
+   *
+   * Serialized units go to `returned_pending`, not straight to sellable: a unit
+   * that has been out on a van and refused is inspected before it is offered
+   * again. That mirrors the counter-return path and is why the domain has no
+   * `sold -> in_stock` transition.
+   */
+  private async restockReturnToOrigin(
+    c: import("pg").PoolClient,
+    tenantId: string,
+    orderId: string,
+    shipmentId: string,
+    /** The staff member who dispatched it — the only attribution a courier poll has. */
+    actorUserId: string,
+  ): Promise<void> {
+    const { rows: head } = await c.query<{ location_id: string }>(
+      "SELECT location_id FROM sales_order WHERE id = $1",
+      [orderId],
+    );
+    const locationId = head[0]?.location_id;
+    if (!locationId) return;
+
+    const { rows: lines } = await c.query<{
+      variant_id: string;
+      quantity: string;
+      stock_unit_id: string | null;
+    }>(
+      "SELECT variant_id, quantity, stock_unit_id FROM sales_order_line WHERE order_id = $1",
+      [orderId],
+    );
+
+    for (const line of lines) {
+      if (line.stock_unit_id) {
+        const { rowCount } = await c.query(
+          `UPDATE stock_unit SET state = 'returned_pending', updated_at = now()
+            WHERE id = $1 AND state = 'sold'`,
+          [line.stock_unit_id],
+        );
+        // Already moved on by some other path — leave the ledger alone rather
+        // than double-crediting the stock.
+        if (rowCount === 0) continue;
+      }
+      await this.inventory.postMovementWith(c, tenantId, {
+        id: randomUUID(),
+        movementType: "return_in",
+        variantId: line.variant_id,
+        ...(line.stock_unit_id ? { stockUnitId: line.stock_unit_id } : {}),
+        quantity: Number(line.quantity),
+        to: {
+          locationId,
+          state: line.stock_unit_id ? "returned_pending" : "on_hand",
+        },
+        actorUserId,
+        reference: { type: "shipment", id: shipmentId },
+        occurredAt: new Date(),
+      });
+    }
+
+    await c.query(
+      `INSERT INTO outbox (id, tenant_id, aggregate, event_type, payload)
+       VALUES ($1,$2,$3,'order.rto',$4)`,
+      [randomUUID(), tenantId, `order:${orderId}`,
+       JSON.stringify({ orderId, shipmentId, lines: lines.length })],
+    );
   }
 
   async getShipment(tenantId: string, shipmentId: string): Promise<ShipmentView> {
