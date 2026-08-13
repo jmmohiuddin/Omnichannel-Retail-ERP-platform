@@ -679,6 +679,26 @@ export function buildPgApp(config: PgAppConfig) {
     const purchasingRole = (req: { auth: AccessClaims }) =>
       requireRole(req, "owner", "manager", "warehouse");
 
+    /**
+     * May this caller see cost, margin or stock-at-cost figures?
+     *
+     * The threat model treats a cashier as a semi-trusted insider: they must be
+     * able to look a unit up by IMEI to answer a warranty question, but must not
+     * see what the shop paid for it. Routes that exist for a non-financial reason
+     * redact the cost fields; routes that are wholly financial reject outright.
+     */
+    const financeRole = (req: { auth: AccessClaims }) => requireRole(req, "owner", "manager");
+
+    /** Strip cost-bearing keys from a payload for callers without finance access. */
+    const redactCost = <T extends Record<string, unknown>>(
+      row: T,
+      ...keys: Array<keyof T>
+    ): Record<string, unknown> => {
+      const out: Record<string, unknown> = { ...row };
+      for (const k of keys) delete out[k as string];
+      return out;
+    };
+
     secured.get("/v1/suppliers", async (req) => ({
       items: await purchasing.listSuppliers(req.auth.tenantId),
     }));
@@ -721,7 +741,10 @@ export function buildPgApp(config: PgAppConfig) {
       return reply.code(201).send(result);
     });
 
-    secured.get("/v1/purchase-orders/:poId", async (req) => {
+    // Per-line unit cost — same guard as the sibling POST/receive routes, which
+    // were already gated. This one was not.
+    secured.get("/v1/purchase-orders/:poId", async (req, reply) => {
+      if (!purchasingRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
       const { poId } = req.params as { poId: string };
       return purchasing.getPurchaseOrder(req.auth.tenantId, poId);
     });
@@ -802,11 +825,14 @@ export function buildPgApp(config: PgAppConfig) {
       return units.repairIn(req.auth.tenantId, req.auth.userId, unitId, parsed.data.note);
     });
 
+    // The IMEI biography. Deliberately reachable by any staff member — a customer
+    // with a handset and no receipt must still be servable (R2.6) — so cost is
+    // redacted rather than the route refused.
     secured.get("/v1/stock-units/:unitId/history", async (req, reply) => {
       const { unitId } = req.params as { unitId: string };
       const history = await units.history(req.auth.tenantId, unitId);
       if (!history) return reply.code(404).send({ error: "NOT_FOUND" });
-      return history;
+      return financeRole(req) ? history : redactCost(history, "unitCostMinor");
     });
 
     // Manager pre-authorizes an exceptional discount; the cashier attaches the
@@ -1572,7 +1598,12 @@ export function buildPgApp(config: PgAppConfig) {
       return ops.submitCount(req.auth.tenantId, req.auth.userId, countId);
     });
 
-    secured.get("/v1/analytics/summary", async (req) => analytics.summary(req.auth.tenantId));
+    // Dashboard summary. Staff may see counts and revenue; `stockValueMinor` is
+    // valued at cost, so it is redacted for callers without finance access.
+    secured.get("/v1/analytics/summary", async (req) => {
+      const summary = await analytics.summary(req.auth.tenantId);
+      return financeRole(req) ? summary : redactCost(summary, "stockValueMinor");
+    });
 
     secured.get("/v1/ai/reorder-suggestions", async (req) => {
       const q = z
@@ -1584,7 +1615,12 @@ export function buildPgApp(config: PgAppConfig) {
       return { items: await analytics.reorderSuggestions(req.auth.tenantId, q) };
     });
 
-    secured.get("/v1/ai/dead-stock", async (req) => {
+    // Wholly a capital-at-risk report: every row carries unit cost and stock
+    // value at cost. No non-financial use, so this one is refused outright.
+    secured.get("/v1/ai/dead-stock", async (req, reply) => {
+      if (!financeRole(req)) {
+        return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
+      }
       const q = z
         .object({ thresholdDays: z.coerce.number().int().min(14).max(730).default(90) })
         .parse(req.query);
