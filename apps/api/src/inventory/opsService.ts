@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { LedgerError } from "@omniretail/domain";
+import { assertTransition, LedgerError } from "@omniretail/domain";
 import type { Db } from "../db.js";
 import { PgInventoryService, translatePgError } from "./pgInventory.js";
 
@@ -10,6 +10,8 @@ export class OpsError extends Error {
       | "SESSION_NOT_FOUND"
       | "TRANSFER_NOT_FOUND"
       | "COUNT_NOT_FOUND"
+      /** A serialized transfer named the wrong units, or units that cannot move. */
+      | "SERIALIZED_RULE"
       | "BAD_STATE",
     message: string,
   ) {
@@ -116,7 +118,7 @@ export class OpsService {
     input: {
       fromLocationId: string;
       toLocationId: string;
-      lines: { variantId: string; quantity: number }[];
+      lines: { variantId: string; quantity: number; stockUnitIds?: string[] }[];
       note?: string;
     },
   ): Promise<{ transferId: string }> {
@@ -132,6 +134,68 @@ export class OpsService {
            input.note ?? null],
         );
         for (const line of input.lines) {
+          const { rows } = await c.query<{ tracking: string }>(
+            `SELECT p.tracking FROM variant v JOIN product p ON p.id = v.product_id
+              WHERE v.id = $1`,
+            [line.variantId],
+          );
+          if (!rows[0]) throw new OpsError("BAD_STATE", `variant ${line.variantId} not found`);
+
+          // A serialized variant transfers as named units. Moving quantity alone
+          // left `stock_unit.location_id` at the origin while the ledger said
+          // the stock was at the destination, so the unit became unsellable at
+          // both: the origin had no on_hand stock, and the destination's sale
+          // guard rejected it as "at another location".
+          if (rows[0].tracking === "serialized") {
+            const unitIds = line.stockUnitIds ?? [];
+            if (unitIds.length !== line.quantity) {
+              throw new OpsError(
+                "SERIALIZED_RULE",
+                `serialized transfers name each unit: ${line.quantity} expected, ` +
+                  `${unitIds.length} given (scan each IMEI)`,
+              );
+            }
+            for (const unitId of unitIds) {
+              const unit = await c.query<{ state: string; location_id: string; variant_id: string }>(
+                "SELECT state, location_id, variant_id FROM stock_unit WHERE id = $1 FOR UPDATE",
+                [unitId],
+              );
+              const u = unit.rows[0];
+              if (!u || u.variant_id !== line.variantId) {
+                throw new OpsError("SERIALIZED_RULE", `unit ${unitId} not found for this variant`);
+              }
+              if (u.state !== "in_stock" || u.location_id !== input.fromLocationId) {
+                throw new OpsError(
+                  "SERIALIZED_RULE",
+                  `unit ${unitId} is ${u.state}` +
+                    (u.location_id !== input.fromLocationId ? " at another location" : ""),
+                );
+              }
+              assertTransition(unitId, "in_stock", "in_transit");
+              // Location follows the ledger: the quantity is already counted at
+              // the destination in `in_transit`, so the unit is too. Neither end
+              // can sell it until the destination confirms receipt.
+              await c.query(
+                `UPDATE stock_unit SET state = 'in_transit', location_id = $2, updated_at = now()
+                  WHERE id = $1`,
+                [unitId, input.toLocationId],
+              );
+              await this.inventory.postMovementWith(c, tenantId, {
+                id: randomUUID(),
+                movementType: "transfer_out",
+                variantId: line.variantId,
+                stockUnitId: unitId,
+                quantity: 1,
+                from: { locationId: input.fromLocationId, state: "on_hand" },
+                to: { locationId: input.toLocationId, state: "in_transit" },
+                actorUserId: userId,
+                reference: { type: "transfer", id: transferId },
+                occurredAt: new Date(),
+              });
+            }
+            continue;
+          }
+
           await this.inventory.postMovementWith(c, tenantId, {
             id: randomUUID(),
             movementType: "transfer_out",
@@ -166,10 +230,40 @@ export class OpsService {
         if (!head) throw new OpsError("TRANSFER_NOT_FOUND", "transfer not found");
         if (head.status !== "dispatched") throw new OpsError("BAD_STATE", `transfer is ${head.status}`);
 
+        // Serialized legs land unit by unit, so each unit's own state follows
+        // the ledger back to sellable. Derived from the dispatch movements, so
+        // the receiver cannot name a unit that was never sent.
+        const { rows: movedUnits } = await c.query<{ variant_id: string; stock_unit_id: string }>(
+          `SELECT variant_id, stock_unit_id FROM stock_movement
+            WHERE reference_type = 'transfer' AND reference_id = $1
+              AND movement_type = 'transfer_out' AND stock_unit_id IS NOT NULL`,
+          [transferId],
+        );
+        for (const unit of movedUnits) {
+          assertTransition(unit.stock_unit_id, "in_transit", "in_stock");
+          await c.query(
+            `UPDATE stock_unit SET state = 'in_stock', location_id = $2, updated_at = now()
+              WHERE id = $1 AND state = 'in_transit'`,
+            [unit.stock_unit_id, head.to_location_id],
+          );
+          await this.inventory.postMovementWith(c, tenantId, {
+            id: randomUUID(),
+            movementType: "transfer_in",
+            variantId: unit.variant_id,
+            stockUnitId: unit.stock_unit_id,
+            quantity: 1,
+            from: { locationId: head.to_location_id, state: "in_transit" },
+            to: { locationId: head.to_location_id, state: "on_hand" },
+            actorUserId: userId,
+            reference: { type: "transfer", id: transferId },
+            occurredAt: new Date(),
+          });
+        }
+
         const { rows: moved } = await c.query<{ variant_id: string; quantity: string }>(
           `SELECT variant_id, sum(quantity) AS quantity FROM stock_movement
             WHERE reference_type = 'transfer' AND reference_id = $1
-              AND movement_type = 'transfer_out'
+              AND movement_type = 'transfer_out' AND stock_unit_id IS NULL
             GROUP BY variant_id`,
           [transferId],
         );

@@ -1558,7 +1558,13 @@ export function buildPgApp(config: PgAppConfig) {
           toLocationId: z.string().uuid(),
           note: z.string().max(300).optional(),
           lines: z.array(
-            z.object({ variantId: z.string().uuid(), quantity: z.number().positive() }),
+            z.object({
+              variantId: z.string().uuid(),
+              quantity: z.number().positive(),
+              // Required for serialized variants — one id per unit, enforced in
+              // OpsService because it depends on the variant's tracking mode.
+              stockUnitIds: z.array(z.string().uuid()).optional(),
+            }),
           ).min(1),
         })
         .safeParse(req.body);
