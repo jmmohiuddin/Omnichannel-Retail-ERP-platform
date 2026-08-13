@@ -22,6 +22,8 @@ import { WebOrderService } from "./sales/webOrderService.js";
 import { FulfillmentError, FulfillmentService } from "./sales/fulfillmentService.js";
 import { OpsError, OpsService } from "./inventory/opsService.js";
 import { AnalyticsService } from "./analytics/analyticsService.js";
+import { EventError, EventService, isEventName, isFunnelPreset } from "./analytics/eventService.js";
+import { ProductError, ProductService } from "./catalog/productService.js";
 import { FinanceError, FinanceService } from "./finance/financeService.js";
 import { LoyaltyError, LoyaltyService } from "./crm/loyaltyService.js";
 import { WmsError, WmsService } from "./wms/wmsService.js";
@@ -144,6 +146,8 @@ export function buildPgApp(config: PgAppConfig) {
   const fulfillment = new FulfillmentService(db, inventory);
   const ops = new OpsService(db, inventory, audit);
   const analytics = new AnalyticsService(db);
+  const events = new EventService(db);
+  const products = new ProductService(db, audit);
   const finance = new FinanceService(db);
   const wms = new WmsService(db);
   const mockGateway = new MockGateway(
@@ -273,6 +277,25 @@ export function buildPgApp(config: PgAppConfig) {
       // link, already-used link). 401 conveys "your credential is not valid"
       // without leaking whether the email itself is known.
       return reply.code(401).send({ error: err.code });
+    }
+    if (err instanceof ProductError) {
+      const status =
+        err.code === "NOT_FOUND" ? 404
+        : err.code === "SLUG_TAKEN" ? 409
+        // The merchant is being asked to confirm, not refused: 409 so the client
+        // can re-send with confirm=true rather than treating it as a dead end.
+        : err.code === "ARCHIVE_CONFIRMATION_REQUIRED" ? 409
+        : err.code === "TRACKING_LOCKED" ? 409
+        // `details.checklist` names the failing clause, so the editor can point
+        // at the field rather than saying "publish failed".
+        : err.code === "PUBLISH_BLOCKED" ? 422
+        : 400;
+      return reply
+        .code(status)
+        .send({ error: err.code, message: err.message, ...(err.details ?? {}) });
+    }
+    if (err instanceof EventError) {
+      return reply.code(400).send({ error: err.code, message: err.message });
     }
     if (err instanceof RefundError) {
       const status =
@@ -943,6 +966,82 @@ export function buildPgApp(config: PgAppConfig) {
     // Merges into the translations map so setting one field doesn't wipe
     // sibling languages, and returns the merged map so the admin UI can
     // refresh the row without re-fetching the whole catalog.
+    // ---- product lifecycle (R1.1, R1.5) -----------------------------------
+    const productWriteRole = (req: { auth: AccessClaims }) =>
+      requireRole(req, "owner", "manager");
+
+    secured.patch("/v1/products/:productId", async (req, reply) => {
+      if (!productWriteRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const { productId } = req.params as { productId: string };
+      const parsed = z
+        .object({
+          name: z.string().min(1).max(200).optional(),
+          description: z.string().max(5000).nullable().optional(),
+          tracking: z.enum(["none", "batch", "serialized"]).optional(),
+          categoryId: z.string().uuid().nullable().optional(),
+          brandId: z.string().uuid().nullable().optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return products.edit(req.auth.tenantId, req.auth.userId, productId, parsed.data);
+    });
+
+    secured.post("/v1/products/:productId/duplicate", async (req, reply) => {
+      if (!productWriteRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const { productId } = req.params as { productId: string };
+      const parsed = z
+        .object({ slug: z.string().min(1).max(200), name: z.string().min(1).max(200).optional() })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await products.duplicate(
+        req.auth.tenantId, req.auth.userId, productId, parsed.data,
+      );
+      return reply.code(201).send(result);
+    });
+
+    // Publish is gated on the R1.5 checklist; this exposes it so the editor can
+    // show what is still missing instead of only failing at the last step.
+    secured.get("/v1/products/:productId/publish-checklist", async (req) => {
+      const { productId } = req.params as { productId: string };
+      return products.publishChecklist(req.auth.tenantId, productId);
+    });
+
+    secured.post("/v1/products/:productId/publish", async (req, reply) => {
+      if (!productWriteRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const { productId } = req.params as { productId: string };
+      return products.publish(req.auth.tenantId, req.auth.userId, productId);
+    });
+
+    secured.post("/v1/products/:productId/unpublish", async (req, reply) => {
+      if (!productWriteRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const { productId } = req.params as { productId: string };
+      return products.unpublish(req.auth.tenantId, req.auth.userId, productId);
+    });
+
+    // Archiving never deletes. With stock on hand it needs `confirm: true`,
+    // which is why this is a POST carrying a body rather than a DELETE.
+    secured.post("/v1/products/:productId/archive", async (req, reply) => {
+      if (!productWriteRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const { productId } = req.params as { productId: string };
+      const parsed = z
+        .object({ confirm: z.boolean().optional(), reason: z.string().max(300).optional() })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return products.archive(req.auth.tenantId, req.auth.userId, productId, parsed.data);
+    });
+
+    secured.put("/v1/products/:productId/variants/:variantId/stock-mode", async (req, reply) => {
+      if (!productWriteRole(req)) return reply.code(403).send({ error: "FORBIDDEN" });
+      const { productId, variantId } = req.params as { productId: string; variantId: string };
+      const parsed = z
+        .object({ stockMode: z.enum(["none", "batch", "serialized"]) })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return products.setVariantStockMode(
+        req.auth.tenantId, req.auth.userId, productId, variantId, parsed.data.stockMode,
+      );
+    });
+
     secured.put("/v1/products/:productId/translations", async (req, reply) => {
       if (!requireRole(req, "owner", "manager")) {
         return reply.code(403).send({ error: "FORBIDDEN", message: "manager role required" });
@@ -1553,6 +1652,40 @@ export function buildPgApp(config: PgAppConfig) {
       );
     });
 
+    // ---- stock adjustments (R4.1) -----------------------------------------
+    // Two steps on purpose: a second human approves the specific fact (reason,
+    // variant, quantity, location), and 029's trigger binds the posted movement
+    // to exactly that fact. One approval, one movement.
+    secured.post("/v1/inventory/adjustments/requests", async (req, reply) => {
+      const parsed = z
+        .object({
+          locationId: z.string().uuid(),
+          variantId: z.string().uuid(),
+          quantity: z.number().positive(),
+          reason: z.enum(["damage", "theft", "found", "correction", "sample", "write_off"]),
+          fromState: z.enum(["on_hand", "damaged", "returned_pending"]).optional(),
+          note: z.string().max(300).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await ops.requestAdjustment(
+        req.auth.tenantId,
+        { userId: req.auth.userId, roles: req.auth.roles },
+        parsed.data,
+      );
+      return reply.code(201).send(result);
+    });
+
+    secured.post("/v1/inventory/adjustments/:approvalId/post", async (req, reply) => {
+      const { approvalId } = req.params as { approvalId: string };
+      const result = await ops.postAdjustment(
+        req.auth.tenantId,
+        { userId: req.auth.userId, roles: req.auth.roles },
+        approvalId,
+      );
+      return reply.code(201).send(result);
+    });
+
     secured.post("/v1/transfers", async (req, reply) => {
       const parsed = z
         .object({
@@ -1608,6 +1741,53 @@ export function buildPgApp(config: PgAppConfig) {
     secured.post("/v1/stock-counts/:countId/submit", async (req) => {
       const { countId } = req.params as { countId: string };
       return ops.submitCount(req.auth.tenantId, req.auth.userId, countId);
+    });
+
+    // ---- product events (R12.1, R12.2) ------------------------------------
+    // Batched and idempotent on the client-supplied id, so a storefront beacon
+    // or an offline POS can replay without inflating a funnel.
+    secured.post("/v1/events", async (req, reply) => {
+      const parsed = z
+        .object({
+          events: z.array(
+            z.object({
+              id: z.string().uuid().optional(),
+              name: z.string().refine(isEventName, "unknown event name"),
+              sessionId: z.string().max(120).optional(),
+              customerId: z.string().uuid().optional(),
+              orderId: z.string().uuid().optional(),
+              props: z.record(z.unknown()).optional(),
+              occurredAt: z.coerce.date().optional(),
+            }),
+          ).min(1).max(200),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      // The actor is taken from the token, never the body — an event that names
+      // its own author is not evidence of anything.
+      const result = await events.recordMany(
+        req.auth.tenantId,
+        parsed.data.events.map((e) => ({ ...e, userId: req.auth.userId })),
+      );
+      return reply.code(201).send(result);
+    });
+
+    secured.get("/v1/reports/events", async (req) => {
+      const q = z
+        .object({ fromIso: z.string().datetime().optional(), toIso: z.string().datetime().optional() })
+        .parse(req.query);
+      return events.counts(req.auth.tenantId, q);
+    });
+
+    secured.get("/v1/reports/funnels/:preset", async (req, reply) => {
+      const { preset } = req.params as { preset: string };
+      if (!isFunnelPreset(preset)) {
+        return reply.code(404).send({ error: "UNKNOWN_FUNNEL", message: `no funnel '${preset}'` });
+      }
+      const q = z
+        .object({ fromIso: z.string().datetime().optional(), toIso: z.string().datetime().optional() })
+        .parse(req.query);
+      return events.presetFunnel(req.auth.tenantId, preset, q);
     });
 
     // Dashboard summary. Staff may see counts and revenue; `stockValueMinor` is

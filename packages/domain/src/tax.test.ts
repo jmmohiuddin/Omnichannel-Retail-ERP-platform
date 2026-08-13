@@ -1,5 +1,114 @@
 import { describe, expect, it } from "vitest";
-import { lineTotals, saleTotals, vatFromInclusive } from "./tax.js";
+import {
+  EMIRATES,
+  assertEmirate,
+  emirateInfo,
+  isEmirate,
+  lineTotals,
+  resolveSupplyEmirate,
+  saleTotals,
+  vatFromInclusive,
+  vatReturnBox,
+  type Emirate,
+} from "./tax.js";
+
+describe("Emirate", () => {
+  it("is exactly the seven emirates, in VAT return Box 1 order", () => {
+    expect(EMIRATES).toEqual(["AZ", "DU", "SH", "AJ", "UQ", "RK", "FU"]);
+    expect(new Set(EMIRATES).size).toBe(7);
+    expect(EMIRATES.map((e) => vatReturnBox(e))).toEqual([
+      "1a", "1b", "1c", "1d", "1e", "1f", "1g",
+    ]);
+  });
+
+  it("recognises valid codes and rejects everything else", () => {
+    for (const code of EMIRATES) expect(isEmirate(code)).toBe(true);
+    // Common wrong guesses: full names, lowercase, ISO-prefixed, other countries.
+    for (const bad of ["Dubai", "du", "AE-DU", "XX", "", null, undefined, 7, {}]) {
+      expect(isEmirate(bad)).toBe(false);
+    }
+    // Inherited Object properties must not pass as codes.
+    expect(isEmirate("toString")).toBe(false);
+    expect(isEmirate("constructor")).toBe(false);
+  });
+
+  it("assertEmirate narrows or throws with the allowed values named", () => {
+    const narrowed: Emirate = assertEmirate("SH");
+    expect(narrowed).toBe("SH");
+    expect(() => assertEmirate("Dubai", "branchEmirate")).toThrow(RangeError);
+    expect(() => assertEmirate("Dubai", "branchEmirate")).toThrow(/branchEmirate.*AZ, DU/s);
+  });
+
+  it("carries English, Arabic and ISO 3166-2 identifiers for every emirate", () => {
+    for (const code of EMIRATES) {
+      const info = emirateInfo(code);
+      expect(info.code).toBe(code);
+      expect(info.iso).toBe(`AE-${code}`);
+      expect(info.en.length).toBeGreaterThan(0);
+      // Arabic is mandatory on a UAE consumer invoice — the name must be Arabic script.
+      expect(info.ar).toMatch(/^[؀-ۿ\s]+$/);
+    }
+    expect(emirateInfo("DU")).toMatchObject({ en: "Dubai", iso: "AE-DU", vatReturnBox: "1b" });
+    expect(emirateInfo("UQ").en).toBe("Umm Al Quwain");
+  });
+
+  it("returns a copy, so a caller cannot corrupt the table", () => {
+    const first = emirateInfo("DU");
+    first.en = "Sharjah";
+    expect(emirateInfo("DU").en).toBe("Dubai");
+  });
+});
+
+describe("resolveSupplyEmirate", () => {
+  it("uses the selling branch, NOT the customer's address", () => {
+    // The rule that is easy to get wrong: a Dubai branch selling to a
+    // Sharjah-resident customer is a Dubai supply.
+    expect(resolveSupplyEmirate({ branchEmirate: "DU", customerEmirate: "SH" })).toEqual({
+      emirate: "DU",
+      basis: "fixed_establishment",
+    });
+  });
+
+  it("ignores the customer's emirate for an ordinary e-commerce sale", () => {
+    // Not a qualifying registrant → still the branch, even for a web order.
+    expect(
+      resolveSupplyEmirate({
+        branchEmirate: "AZ",
+        customerEmirate: "FU",
+        qualifyingRegistrantEcommerce: false,
+      }),
+    ).toEqual({ emirate: "AZ", basis: "fixed_establishment" });
+  });
+
+  it("reports by customer location only for a qualifying registrant's e-commerce supply", () => {
+    expect(
+      resolveSupplyEmirate({
+        branchEmirate: "DU",
+        customerEmirate: "RK",
+        qualifyingRegistrantEcommerce: true,
+      }),
+    ).toEqual({ emirate: "RK", basis: "customer_location" });
+  });
+
+  it("falls back to the branch when the exception applies but the customer emirate is unknown", () => {
+    expect(
+      resolveSupplyEmirate({ branchEmirate: "DU", qualifyingRegistrantEcommerce: true }),
+    ).toEqual({ emirate: "DU", basis: "fixed_establishment" });
+  });
+
+  it("rejects an unknown branch emirate rather than defaulting one", () => {
+    expect(() =>
+      resolveSupplyEmirate({ branchEmirate: "Dubai" as Emirate }),
+    ).toThrow(RangeError);
+    expect(() =>
+      resolveSupplyEmirate({
+        branchEmirate: "DU",
+        customerEmirate: "ABU" as Emirate,
+        qualifyingRegistrantEcommerce: true,
+      }),
+    ).toThrow(RangeError);
+  });
+});
 
 describe("vatFromInclusive (UAE 5% = 500bp)", () => {
   it("extracts VAT from inclusive price", () => {

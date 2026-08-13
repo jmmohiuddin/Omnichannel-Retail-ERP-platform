@@ -13,6 +13,14 @@
  * flagged UNVERIFIED below.
  */
 
+import {
+  emirateInfo,
+  resolveSupplyEmirate,
+  type Emirate,
+  type EmirateBasis,
+  type VatReturnBox,
+} from "@omniretail/domain";
+
 /** Draft profile marker — deliberately not a real Peppol profile id. */
 export const EINVOICE_PROFILE = "PINT-AE-draft" as const;
 
@@ -43,6 +51,11 @@ export interface ReceiptLikeLine {
   taxMinor: number;
   /** Tax-inclusive line total in fils (after discount). */
   totalMinor: number;
+  /**
+   * Emirate of the supply for this line (sales_order_line.emirate, R7.6).
+   * Undefined on pre-R7.6 rows that were never attributed.
+   */
+  emirate?: Emirate | undefined;
 }
 
 export interface ReceiptLike {
@@ -51,6 +64,12 @@ export interface ReceiptLike {
   seller: { name: string; trn: string | null };
   currency: string;
   vatRateBp: number;
+  /**
+   * Emirate of the establishment making the supply — the selling BRANCH
+   * (location.emirate), never the customer's address. Used when the lines
+   * agree on it or carry none. Undefined for orders predating R7.6.
+   */
+  emirate?: Emirate | undefined;
   lines: ReceiptLikeLine[];
   totals: {
     subtotalMinor: number;
@@ -64,6 +83,28 @@ export interface ReceiptLike {
 export interface BuildOptions {
   /** Buyer party. Absent → simplified tax invoice (FTA threshold rules). */
   buyer?: { name: string; trn?: string } | undefined;
+  /**
+   * Where the customer receives the supply. Recorded only to feed the
+   * qualifying-registrant exception below — it does NOT move an ordinary
+   * retail supply out of the selling branch's emirate.
+   */
+  customerEmirate?: Emirate | undefined;
+  /**
+   * Set only when the seller is a "qualifying registrant" (over AED 100m of
+   * e-commerce supplies in the calendar year) AND this is an e-commerce
+   * supply. Then the supply reports by customer location instead of by the
+   * fixed establishment. Far above this business's scale today.
+   */
+  qualifyingRegistrantEcommerce?: boolean | undefined;
+}
+
+export interface EInvoicePartyAddress {
+  /** Emirate name in English (UBL cbc:CountrySubentity / Peppol BT-39). */
+  countrySubentity: string;
+  /** ISO 3166-2 subdivision code, e.g. "AE-DU". */
+  countrySubentityCode: string;
+  /** ISO 3166-1 alpha-2 (UBL cac:Country/cbc:IdentificationCode / BT-40). */
+  countryCode: "AE";
 }
 
 export interface EInvoiceParty {
@@ -74,6 +115,29 @@ export interface EInvoiceParty {
    * scheme id for TRNs before transmission.
    */
   trn: string | null;
+  /**
+   * Postal address carrying the emirate. Present on whichever party the
+   * supply is attributed to (see EInvoiceSupplyEmirate.basis); absent when
+   * no emirate is known. UNVERIFIED: PINT-AE may require a fuller address.
+   */
+  address?: EInvoicePartyAddress;
+}
+
+/**
+ * The emirate a supply is reported in (R7.6; TRD §5.3) — required for VAT
+ * return Box 1 (1a–1g) and the FTA Audit File, and carried here whether or
+ * not an ASP is connected.
+ */
+export interface EInvoiceSupplyEmirate {
+  /** ISO 3166-2:AE subdivision code without the country prefix, e.g. "DU". */
+  code: Emirate;
+  name: string;
+  nameAr: string;
+  isoSubdivision: string;
+  /** What attributed the supply: the fixed establishment, or (rarely) the customer. */
+  basis: EmirateBasis;
+  /** VAT return Box 1 line this document's standard-rated supplies land on. */
+  vatReturnBox: VatReturnBox;
 }
 
 export interface EInvoiceLine {
@@ -89,6 +153,11 @@ export interface EInvoiceLine {
   vatRatePercent: string;
   lineVat: string;
   lineVatMinor: number;
+  /**
+   * Emirate of this line's supply. The FTA Audit File is line-level, so the
+   * attribution is kept per line rather than only on the document.
+   */
+  emirate: Emirate | null;
 }
 
 export interface EInvoiceModel {
@@ -105,6 +174,11 @@ export interface EInvoiceModel {
   currency: string;
   /** True when no buyer party is attached (simplified tax invoice). */
   simplified: boolean;
+  /**
+   * Emirate of the supply (R7.6). Undefined only for orders that predate the
+   * emirate columns and were never backfilled — validateModel warns.
+   */
+  supplyEmirate?: EInvoiceSupplyEmirate;
   seller: EInvoiceParty;
   buyer?: EInvoiceParty;
   taxTotal: {
@@ -213,6 +287,21 @@ function unitNetMinor(lineNetMinor: number, quantity: number): number {
 }
 
 /**
+ * The document-level emirate: the receipt's branch emirate when it has one,
+ * otherwise the single emirate its lines agree on. Deliberately gives up
+ * rather than picking a winner when the lines disagree — validateModel then
+ * warns, because Box 1 attribution for such a document is ambiguous and the
+ * answer is to split it, not to guess.
+ */
+function documentEmirate(receipt: ReceiptLike): Emirate | undefined {
+  if (receipt.emirate !== undefined) return receipt.emirate;
+  const distinct = new Set(
+    receipt.lines.map((l) => l.emirate).filter((e): e is Emirate => e !== undefined),
+  );
+  return distinct.size === 1 ? [...distinct][0] : undefined;
+}
+
+/**
  * Map a receipt (SalesService.receipt shape) to a typed e-invoice model.
  * Pure and deterministic — the issue date comes from the receipt, never
  * from the clock.
@@ -223,6 +312,32 @@ export function buildEInvoiceModel(
 ): EInvoiceModel {
   const { date, dateTime } = toDubaiIso(receipt.issuedAt);
   const ratePercent = bpToPercent(receipt.vatRateBp);
+
+  // R7.6: the emirate of the fixed establishment most closely connected to
+  // the supply — the selling branch. The buyer's own emirate moves it only
+  // under the qualifying-registrant e-commerce exception, which the domain
+  // rule (never re-implemented here) decides.
+  const branchEmirate = documentEmirate(receipt);
+  const supply =
+    branchEmirate === undefined
+      ? undefined
+      : resolveSupplyEmirate({
+          branchEmirate,
+          customerEmirate: opts.customerEmirate,
+          qualifyingRegistrantEcommerce: opts.qualifyingRegistrantEcommerce,
+        });
+  const info = supply === undefined ? undefined : emirateInfo(supply.emirate);
+  const supplyEmirate: EInvoiceSupplyEmirate | undefined =
+    supply === undefined || info === undefined
+      ? undefined
+      : {
+          code: supply.emirate,
+          name: info.en,
+          nameAr: info.ar,
+          isoSubdivision: info.iso,
+          basis: supply.basis,
+          vatReturnBox: info.vatReturnBox,
+        };
 
   const lines: EInvoiceLine[] = receipt.lines.map((l, i) => {
     const lineNetMinor = l.totalMinor - l.taxMinor;
@@ -237,6 +352,7 @@ export function buildEInvoiceModel(
       vatRatePercent: ratePercent,
       lineVat: filsToDecimal(l.taxMinor),
       lineVatMinor: l.taxMinor,
+      emirate: l.emirate ?? supplyEmirate?.code ?? null,
     };
   });
 
@@ -244,8 +360,29 @@ export function buildEInvoiceModel(
   const taxInclusiveMinor = receipt.totals.totalMinor;
   const taxMinor = receipt.totals.taxMinor;
 
+  // The address carrying the emirate hangs off the party the supply is
+  // attributed to: the supplier for the ordinary fixed-establishment rule,
+  // the customer under the qualifying-registrant exception (and only when
+  // there is a customer party to hang it on).
+  const emirateAddress: { address: EInvoicePartyAddress } | Record<string, never> =
+    supplyEmirate === undefined
+      ? {}
+      : {
+          address: {
+            countrySubentity: supplyEmirate.name,
+            countrySubentityCode: supplyEmirate.isoSubdivision,
+            countryCode: "AE",
+          },
+        };
+  const emirateOnBuyer =
+    supplyEmirate?.basis === "customer_location" && opts.buyer !== undefined;
+
   const buyer: EInvoiceParty | undefined = opts.buyer
-    ? { name: opts.buyer.name, trn: opts.buyer.trn ?? null }
+    ? {
+        name: opts.buyer.name,
+        trn: opts.buyer.trn ?? null,
+        ...(emirateOnBuyer ? emirateAddress : {}),
+      }
     : undefined;
 
   return {
@@ -259,7 +396,12 @@ export function buildEInvoiceModel(
     invoiceTypeCode: "380",
     currency: receipt.currency,
     simplified: buyer === undefined,
-    seller: { name: receipt.seller.name, trn: receipt.seller.trn ?? null },
+    ...(supplyEmirate ? { supplyEmirate } : {}),
+    seller: {
+      name: receipt.seller.name,
+      trn: receipt.seller.trn ?? null,
+      ...(emirateOnBuyer ? {} : emirateAddress),
+    },
     ...(buyer ? { buyer } : {}),
     taxTotal: {
       taxAmount: filsToDecimal(taxMinor),
@@ -351,6 +493,33 @@ export function validateModel(model: EInvoiceModel): ValidationResult {
     );
   }
 
+  // R7.6. A warning, not an error: an unattributed emirate blocks the VAT
+  // return line and the audit file, but it does not make the document
+  // arithmetically wrong, and pre-R7.6 orders legitimately have none.
+  if (!model.supplyEmirate) {
+    warnings.push(
+      "emirate missing: VAT return Box 1 (1a-1g) and the FTA Audit File cannot be " +
+        "derived for this document; set location.emirate for the selling branch and " +
+        "run backfill_emirate_from_location()",
+    );
+  } else if (model.supplyEmirate.basis === "fixed_establishment") {
+    // Under the qualifying-registrant exception the document's emirate is
+    // meant to differ from the establishment's, so this check applies only to
+    // the ordinary rule.
+    const stray = new Set(
+      model.lines
+        .map((l) => l.emirate)
+        .filter((e) => e !== null && e !== model.supplyEmirate?.code),
+    );
+    if (stray.size > 0) {
+      warnings.push(
+        `lines carry emirate(s) ${[...stray].join(", ")} but the document is attributed to ` +
+          `${model.supplyEmirate.code}: Box 1 attribution is ambiguous — issue one document ` +
+          "per emirate",
+      );
+    }
+  }
+
   return { errors, warnings };
 }
 
@@ -363,11 +532,25 @@ function partyXml(tag: "AccountingSupplierParty" | "AccountingCustomerParty", pa
         <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
       </cac:PartyTaxScheme>`
     : "";
+  // Emirate as cbc:CountrySubentity (Peppol BT-39) with the country code
+  // (BT-40). UNVERIFIED: whether PINT-AE expects the emirate here, expects
+  // cbc:CountrySubentityCode as well, or mandates further address lines.
+  const addressXml = party.address
+    ? `
+      <cac:PostalAddress>
+        <!-- emirate of the supply (R7.6); ISO 3166-2 code in the comment is
+             UNVERIFIED as a PINT-AE binding: ${escapeXml(party.address.countrySubentityCode)} -->
+        <cbc:CountrySubentity>${escapeXml(party.address.countrySubentity)}</cbc:CountrySubentity>
+        <cac:Country>
+          <cbc:IdentificationCode>${escapeXml(party.address.countryCode)}</cbc:IdentificationCode>
+        </cac:Country>
+      </cac:PostalAddress>`
+    : "";
   return `  <cac:${tag}>
     <cac:Party>
       <cac:PartyName>
         <cbc:Name>${escapeXml(party.name)}</cbc:Name>
-      </cac:PartyName>${trnXml}
+      </cac:PartyName>${addressXml}${trnXml}
       <cac:PartyLegalEntity>
         <cbc:RegistrationName>${escapeXml(party.name)}</cbc:RegistrationName>
       </cac:PartyLegalEntity>

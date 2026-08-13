@@ -64,14 +64,25 @@ await db.withTenant(tenantId, async (c) => {
     const variantId = randomUUID();
     const serialized = item.sku.startsWith("P");
     await c.query(
-      `INSERT INTO product (id, tenant_id, name, slug, tracking, status)
-       VALUES ($1,$2,$3,$4,$5,'active')`,
+      // Seeded products are already-published stock, so `published_at` is set
+      // alongside the status — the lifecycle timestamps (031) exist so
+      // "when did this leave or reach the storefront" is answerable without
+      // walking the audit chain, and a live product with a null timestamp
+      // would be a hole in that history from day one.
+      `INSERT INTO product (id, tenant_id, name, slug, tracking, status, published_at)
+       VALUES ($1,$2,$3,$4,$5,'active', now())`,
       [productId, tenantId, item.name, item.slug, serialized ? "serialized" : "none"],
     );
     await c.query(
-      `INSERT INTO variant (id, tenant_id, product_id, sku, price_minor, currency)
-       VALUES ($1,$2,$3,$4,$5,'AED')`,
-      [variantId, tenantId, productId, item.sku, item.priceAedFils],
+      // `stock_mode` is set explicitly, not left to the 031 backfill: that
+      // backfill runs during migration, so it only reaches rows that already
+      // exist. Seed rows are inserted afterwards and would land with a NULL
+      // stock_mode — which R1.5 treats as "not configured" and refuses to
+      // publish, leaving the demo catalogue unpublishable.
+      `INSERT INTO variant (id, tenant_id, product_id, sku, price_minor, currency, stock_mode)
+       VALUES ($1,$2,$3,$4,$5,'AED',$6)`,
+      [variantId, tenantId, productId, item.sku, item.priceAedFils,
+       serialized ? "serialized" : "none"],
     );
     ids.products.push({ variantId, sku: item.sku, qty: item.qty });
   }
