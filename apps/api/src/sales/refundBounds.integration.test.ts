@@ -89,6 +89,9 @@ describe.skipIf(!run)("refunds are bounded by captured payments", () => {
     deviceId = (
       await post(ownerToken, "/v1/devices", { kind: "pos_register", name: "Till 1", locationId })
     ).json().id;
+    // A register must have an open till before it can take cash (R3.10):
+    // cash outside a session escapes the blind-close reconciliation.
+    await post(ownerToken, "/v1/cash-sessions", { deviceId, openingFloatMinor: 0 });
 
     const productId = (
       await post(ownerToken, "/v1/products", {

@@ -37,6 +37,9 @@ describe.skipIf(!run)("gift card tender", () => {
     })).json().accessToken;
     locationId = (await post("/v1/locations", { kind: "store", name: "S", code: "S1" })).json().id;
     deviceId = (await post("/v1/devices", { kind: "pos_register", name: "R1", locationId })).json().id;
+    // A register must have an open till before it can take cash (R3.10):
+    // cash outside a session escapes the blind-close reconciliation.
+    await post("/v1/cash-sessions", { deviceId: deviceId, openingFloatMinor: 0 });
     const productId = (await post("/v1/products", { name: "Lamp", slug: "lamp", tracking: "none" })).json().id;
     variantId = (await post(`/v1/products/${productId}/variants`, {
       sku: "LM-1", priceMinor: 10500, currency: "AED",

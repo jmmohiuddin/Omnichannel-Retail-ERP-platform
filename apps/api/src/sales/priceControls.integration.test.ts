@@ -60,6 +60,9 @@ describe.skipIf(!run)("price controls, warranty, repairs", () => {
     }
     locationId = (await post(ownerToken, "/v1/locations", { kind: "store", name: "S", code: "S1" })).json().id;
     deviceId = (await post(ownerToken, "/v1/devices", { kind: "pos_register", name: "R1", locationId })).json().id;
+    // A register must have an open till before it can take cash (R3.10):
+    // cash outside a session escapes the blind-close reconciliation.
+    await post(ownerToken, "/v1/cash-sessions", { deviceId: deviceId, openingFloatMinor: 0 });
 
     const plainProduct = (await post(ownerToken, "/v1/products",
       { name: "Cover", slug: "cover", tracking: "none" })).json().id;

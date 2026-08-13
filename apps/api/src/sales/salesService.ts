@@ -32,6 +32,8 @@ export class SaleError extends Error {
       | "SERIALIZED_REQUIRED"
       | "UNIT_UNAVAILABLE"
       | "PRICE_MISMATCH"
+      /** Cash tendered on a register with no open till (R3.10). */
+      | "NO_OPEN_CASH_SESSION"
       | "DISCOUNT_APPROVAL_REQUIRED",
     message: string,
   ) {
@@ -349,6 +351,17 @@ export class SalesService {
           [input.deviceId],
         );
         const cashSessionId = session.rows[0]?.id ?? null;
+        // Cash outside an open till is cash outside reconciliation: the blind
+        // close computes expected drawer contents from this ledger, so a sale
+        // with no session silently shifts the variance by its own amount and
+        // the cashier is blamed for a gap nobody can trace. Refuse it instead
+        // (R3.10) — opening a till is the first thing a shift does.
+        if (cashSessionId === null && input.payments.some((p) => p.method === "cash")) {
+          throw new SaleError(
+            "NO_OPEN_CASH_SESSION",
+            "no open cash session on this register — open the till before taking cash",
+          );
+        }
         for (const payment of input.payments) {
           await c.query(
             `INSERT INTO payment (id, tenant_id, order_id, method, amount_minor, currency,

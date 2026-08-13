@@ -193,6 +193,8 @@ export function buildPgApp(config: PgAppConfig) {
         : err.code === "UNKNOWN_VARIANT" ? 404
         : err.code === "DUPLICATE_SALE" ? 409
         : err.code === "UNIT_UNAVAILABLE" ? 409
+        // A precondition the cashier can fix in one action: open the till.
+        : err.code === "NO_OPEN_CASH_SESSION" ? 409
         : err.code === "DISCOUNT_APPROVAL_REQUIRED" ? 403
         : 400;
       return reply.code(status).send({ error: err.code, message: err.message });
