@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "pnpm install --no-frozen-lockfile",
-  "buildCommand": "pnpm --filter @omniretail/domain --filter @omniretail/db --filter @omniretail/api --filter @omniretail/connector-sdk --filter @omniretail/connector-noon --filter @omniretail/worker build",
+  "buildCommand": "pnpm --filter @omniretail/domain --filter @omniretail/db --filter @omniretail/api --filter @omniretail/connector-sdk --filter @omniretail/connector-noon --filter @omniretail/connector-salla --filter @omniretail/connector-zid --filter @omniretail/worker build",
   "outputDirectory": "public",
   "functions": {
     "api/index.ts": {
