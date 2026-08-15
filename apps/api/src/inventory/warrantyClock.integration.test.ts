@@ -124,17 +124,20 @@ describe.skipIf(!run)("warranty clock (R10.7)", () => {
   it("extends the warranty by the days the customer could not use the handset", async () => {
     const before = new Date();
     before.setDate(before.getDate() + 300);
-    const unitId = await unitOutForRepair(
-      "352099001761481", before.toISOString().slice(0, 10), 14,
-    );
+    const warrantyUntil = before.toISOString().slice(0, 10);
+    const unitId = await unitOutForRepair("352099001761481", warrantyUntil, 14);
 
     const inRes = await post(`/v1/stock-units/${unitId}/repair-in`, { note: "screen replaced" });
     expect(inRes.statusCode).toBeLessThan(300);
 
     const after = await warrantyOf(unitId);
     expect(after).not.toBeNull();
-    // 14 days in the workshop → 14 days more cover.
-    expect(daysBetween(after!, before)).toBe(14);
+    // 14 days in the workshop → 14 days more cover. Compared against the
+    // midnight-truncated seed date, not `before` itself — that date-only
+    // string is what actually landed in warranty_until, so comparing
+    // against `before`'s own time-of-day skews the result by whatever
+    // fraction of a day `before` happened to fall on.
+    expect(daysBetween(after!, new Date(warrantyUntil))).toBe(14);
   });
 
   it("leaves a unit with no warranty alone rather than inventing one", async () => {
@@ -149,24 +152,23 @@ describe.skipIf(!run)("warranty clock (R10.7)", () => {
   it("rounds a part-day of downtime up to a whole day", async () => {
     const before = new Date();
     before.setDate(before.getDate() + 100);
-    const unitId = await unitOutForRepair(
-      "490154203237518", before.toISOString().slice(0, 10), 0,
-    );
+    const warrantyUntil = before.toISOString().slice(0, 10);
+    const unitId = await unitOutForRepair("490154203237518", warrantyUntil, 0);
 
     await post(`/v1/stock-units/${unitId}/repair-in`, {});
 
     // Out and back within the same day: the customer still lost that day's
-    // use, so the cover moves by one day, never by zero.
+    // use, so the cover moves by one day, never by zero. Compared against
+    // the midnight-truncated seed date — see the first test above.
     const after = await warrantyOf(unitId);
-    expect(daysBetween(after!, before)).toBe(1);
+    expect(daysBetween(after!, new Date(warrantyUntil))).toBe(1);
   });
 
   it("compounds across repeated repairs", async () => {
     const before = new Date();
     before.setDate(before.getDate() + 200);
-    const unitId = await unitOutForRepair(
-      "358240051111110", before.toISOString().slice(0, 10), 10,
-    );
+    const warrantyUntil = before.toISOString().slice(0, 10);
+    const unitId = await unitOutForRepair("358240051111110", warrantyUntil, 10);
     await post(`/v1/stock-units/${unitId}/repair-in`, {});
 
     // Straight back out again — the same fault, a second visit, five days.
@@ -177,8 +179,9 @@ describe.skipIf(!run)("warranty clock (R10.7)", () => {
     await post(`/v1/stock-units/${unitId}/repair-in`, {});
 
     // 10 days, then 5 more. Each repair extends from wherever the last left
-    // the clock, so downtime accumulates.
+    // the clock, so downtime accumulates. Compared against the
+    // midnight-truncated seed date — see the first test above.
     const after = await warrantyOf(unitId);
-    expect(daysBetween(after!, before)).toBe(15);
+    expect(daysBetween(after!, new Date(warrantyUntil))).toBe(15);
   });
 });
