@@ -1,0 +1,95 @@
+name: Database backup (R14.1)
+
+# Hourly, to meet the PRD §11 durability target of RPO <= 1 hour.
+#
+# Why GitHub Actions and not Vercel Cron (the repo's other scheduler):
+#   * Vercel functions have no pg_dump binary and cannot get one — the dump is
+#     a native client, not a Node library.
+#   * api/cron/* functions cap at 30-60s (vercel.json). A full logical dump of a
+#     growing retail database will not finish in that budget, and a backup that
+#     times out at 3am is a backup you do not have.
+#   * Vercel's Hobby plan caps cron at once per day (docs/05 §5), which cannot
+#     meet RPO <= 1h at all.
+# GitHub Actions has none of those limits, ships the Postgres client, and keeps
+# the recovery path independent of the platform that is hosting the thing that
+# just broke.
+#
+# CAVEAT, stated plainly: GitHub's scheduled events are best-effort and can be
+# delayed (occasionally by tens of minutes) or dropped under load. Hourly dumps
+# alone therefore do NOT reliably guarantee RPO <= 1h. Neon's point-in-time
+# restore is what meets the RPO target; these dumps are the off-platform copy
+# that survives losing the Neon project itself. See the runbook, §RPO/RTO.
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why this manual backup is being taken"
+        required: false
+        default: "manual"
+
+# Never let two dumps overlap; a slow one must not be cut short by the next
+# hour's run.
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The client major must be >= the server major or pg_dump refuses to run.
+      # Neon upgrades the server on their schedule, so this is a repo variable
+      # (Settings > Variables > PG_MAJOR), not a hard-coded constant. The
+      # runner's default client is older than Neon's server.
+      - name: Install matching Postgres client
+        env:
+          PG_MAJOR: ${{ vars.PG_MAJOR || '18' }}
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "postgresql-client-${PG_MAJOR}"
+          echo "/usr/lib/postgresql/${PG_MAJOR}/bin" >> "$GITHUB_PATH"
+
+      - name: Confirm client version
+        run: pg_dump --version
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.BACKUP_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BACKUP_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.BACKUP_AWS_REGION || 'me-central-1' }}
+
+      - name: Dump, verify and upload
+        env:
+          # MUST be the schema-owner, DIRECT (non-pooler) Neon endpoint.
+          # A dump taken as omniretail_app is silently empty — the script
+          # refuses it, but the secret should never be the app role to begin
+          # with. See the runbook, §The one thing that must not go wrong.
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          BACKUP_S3_BUCKET: ${{ vars.BACKUP_S3_BUCKET }}
+          BACKUP_S3_PREFIX: ${{ vars.BACKUP_S3_PREFIX || 'omniretail_prod' }}
+          BACKUP_RETENTION_DAYS: ${{ vars.BACKUP_RETENTION_DAYS || '35' }}
+        run: ./scripts/backup/pg-backup.sh
+
+      # A failed backup that nobody notices is the same as no backup. Scheduled
+      # workflow failures email the repo owner by default; this makes the
+      # failure legible in the run list without opening the log.
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "::error title=Database backup FAILED::No new backup set was" \
+               "uploaded this hour. Runbook: docs/runbooks/backup-restore.md"

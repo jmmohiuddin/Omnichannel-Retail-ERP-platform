@@ -93,7 +93,12 @@ export const en = {
 
   // Totals
   "totals.subtotal": "Subtotal (excl. VAT)",
-  "totals.vat": "VAT 5% (included)",
+  // {rate} is the TENANT's rate (tenant.vat_rate_bp), never a literal — the
+  // label used to read "VAT 5%" for every tenant regardless of the rate the
+  // server actually charged (R7.4).
+  "totals.vat": "VAT {rate}% (included)",
+  "totals.vatRateAssumed":
+    "VAT rate not synced — charging the statutory {rate}%. Sign in again to load this store's rate.",
   "totals.total": "Total",
   "totals.loyaltyPoints": "Loyalty points",
   "totals.remainingDue": "Remaining due",
@@ -212,7 +217,11 @@ export const ar: Record<MessageKey, string> = {
   "cart.removeAria": "إزالة {name}",
 
   "totals.subtotal": "المجموع الفرعي (غير شامل الضريبة)",
-  "totals.vat": "ضريبة القيمة المضافة ٥٪ (شاملة)",
+  // Western digits for the rate, per the file header: figures on a UAE till
+  // read in Latin numerals in both languages.
+  "totals.vat": "ضريبة القيمة المضافة {rate}٪ (شاملة)",
+  "totals.vatRateAssumed":
+    "لم تتم مزامنة نسبة الضريبة — يجري تطبيق النسبة القانونية {rate}٪. سجّل الدخول مجدداً لتحميل نسبة هذا المتجر.",
   "totals.total": "الإجمالي",
   "totals.loyaltyPoints": "نقاط الولاء",
   "totals.remainingDue": "المتبقي للدفع",

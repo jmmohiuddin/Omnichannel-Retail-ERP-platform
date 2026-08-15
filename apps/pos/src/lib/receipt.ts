@@ -16,6 +16,7 @@
  */
 import type { Receipt, SalePaymentPayload, SaleResult } from "./api.js";
 import type { CartLine, CartTotals } from "./cart.js";
+import { isValidVatRateBp } from "./tenantConfig.js";
 
 export type CompletedSale =
   | {
@@ -25,6 +26,8 @@ export type CompletedSale =
       receipt: Receipt | null;
       lines: CartLine[];
       payments: SalePaymentPayload[];
+      /** The rate the till priced at; the server's own rate wins when it sent one. */
+      vatRateBp: number;
     }
   | {
       mode: "offline";
@@ -33,6 +36,8 @@ export type CompletedSale =
       lines: CartLine[];
       payments: SalePaymentPayload[];
       currency: string;
+      /** The tenant rate this sale was priced at — there is no server figure yet. */
+      vatRateBp: number;
     };
 
 export interface ReceiptDocumentLine {
@@ -75,6 +80,13 @@ export interface ReceiptDocument {
   /** True for a queued offline sale awaiting sync. */
   pendingSync: boolean;
   currency: string;
+  /**
+   * The VAT rate this document was taxed at, in basis points. A tax invoice
+   * has to state the rate applied, and it must be the rate that actually
+   * produced `totals.taxMinor` — so it comes from the server's receipt when
+   * there is one, and from the till's tenant rate otherwise. Never a literal.
+   */
+  vatRateBp: number;
   lines: ReceiptDocumentLine[];
   totals: { subtotalMinor: number; taxMinor: number; totalMinor: number };
   payments: SalePaymentPayload[];
@@ -104,6 +116,7 @@ export function buildReceiptDocument(completed: CompletedSale): ReceiptDocument 
       documentType: "sale_record",
       pendingSync: true,
       currency: completed.currency,
+      vatRateBp: completed.vatRateBp,
       lines: cartLines(completed.lines),
       totals: {
         subtotalMinor: netOfVat(completed.totals.totalMinor, completed.totals.taxMinor),
@@ -126,6 +139,9 @@ export function buildReceiptDocument(completed: CompletedSale): ReceiptDocument 
     orderNo: receipt?.orderNo ?? sale.orderNo,
     pendingSync: false,
     currency: receipt?.currency ?? sale.totals.currency,
+    // The server's rate is the one the invoice was actually raised at; the
+    // till's cached rate is only the fallback for a failed receipt fetch.
+    vatRateBp: isValidVatRateBp(receipt?.vatRateBp) ? receipt.vatRateBp : completed.vatRateBp,
     lines:
       receipt?.lines && receipt.lines.length > 0
         ? receipt.lines.map((l, i) => ({

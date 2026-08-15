@@ -2,6 +2,14 @@
   "name": "@omniretail/api",
   "version": "0.1.0",
   "type": "module",
+  "comment:exports": "The payment effect path is shared with @omniretail/worker's reconciler (R6.2), and the notification transport with its delivery job (R13). Exposed as explicit subpaths so the worker imports exactly those, not the Fastify app.",
+  "exports": {
+    "./db": "./dist/db.js",
+    "./payments": "./dist/payments/paymentService.js",
+    "./payments/gateway": "./dist/payments/gatewayPort.js",
+    "./notify/transport": "./dist/notify/smtpTransport.js",
+    "./notify/templates": "./dist/notify/templates.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

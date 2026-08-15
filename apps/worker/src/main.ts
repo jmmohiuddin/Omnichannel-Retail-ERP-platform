@@ -39,15 +39,56 @@ const driftTimer = setInterval(() => {
     .catch((err) => console.error("drift-check:", err.message));
 }, 60 * 60_000);
 
+// Payment reconciliation (R6.2). Repairs intents whose gateway webhook never
+// arrived, through the very same effect path the webhook would have taken.
+const { Db } = await import("@omniretail/api/db");
+const { MockGateway } = await import("@omniretail/api/payments/gateway");
+const { PaymentService } = await import("@omniretail/api/payments");
+const { PaymentReconciler, PgExceptionSink } = await import("./paymentReconciler.js");
+
+const gateway = new MockGateway(process.env.PAYMENT_WEBHOOK_SECRET ?? "dev-mock-webhook-secret");
+const reconciler = new PaymentReconciler(
+  pool,
+  // The service's own pool is this worker's connection, so the repair runs
+  // under the worker role and the same RLS policies as every other job here.
+  new PaymentService(new Db(databaseUrl), new Map([[gateway.key, gateway]])),
+  new PgExceptionSink(pool),
+);
+const reconcileTimer = setInterval(() => {
+  reconciler
+    .runOnce()
+    .catch((err) => console.error("payment reconciler:", err.message));
+}, 5 * 60_000);
+
+// Customer notification delivery (R13.1). Without SMTP configured the queue
+// simply accumulates — enqueue still works and the Messages screen still shows
+// what is waiting, which is a far better failure mode than dropping mail.
+const { NotificationDelivery } = await import("./notificationDelivery.js");
+const { SmtpTransport, smtpConfigFromEnv } = await import("@omniretail/api/notify/transport");
+const smtpConfig = smtpConfigFromEnv();
+let notifyTimer: NodeJS.Timeout | undefined;
+if (smtpConfig) {
+  const delivery = new NotificationDelivery(pool, new SmtpTransport(smtpConfig));
+  notifyTimer = setInterval(() => {
+    delivery.runOnce().catch((err) => console.error("notification delivery:", err.message));
+  }, 15_000);
+} else {
+  console.warn("SMTP_HOST/SMTP_FROM unset — notification delivery is idle, queue will build up");
+}
+
 const abort = new AbortController();
 process.on("SIGINT", () => abort.abort());
 process.on("SIGTERM", () => abort.abort());
 
-console.log("outbox relay + event consumer + reservation janitor running");
+console.log(
+  "outbox relay + event consumer + reservation janitor + payment reconciler running",
+);
 await relay.runForever(500, abort.signal);
 clearInterval(janitorTimer);
 clearInterval(driftTimer);
 clearInterval(pruneTimer);
+clearInterval(reconcileTimer);
+if (notifyTimer) clearInterval(notifyTimer);
 await consumer.close();
 await publisher.close();
 await pool.end();

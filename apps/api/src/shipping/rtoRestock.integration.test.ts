@@ -154,6 +154,9 @@ describe.skipIf(!run)("RTO restocks the ledger", () => {
       courier: "mock",
       address: { line1: "Shop 12, Naif", city: "Dubai" },
       codAmountMinor: 210000,
+      // R5.6: what the round trip costs, so a refusal has a number.
+      outboundFreightMinor: 2_500,
+      returnFreightMinor: 2_500,
     });
     expect(shipment.statusCode).toBe(201);
     const { shipmentId } = shipment.json();
@@ -181,5 +184,114 @@ describe.skipIf(!run)("RTO restocks the ledger", () => {
       return Number(rows[0]!.n);
     });
     expect(rto).toBe(1);
+
+    // R5.6, the second half: the order must stop claiming it was fulfilled,
+    // and the freight the failed leg cost must land against it. Without
+    // these, the order list reports a loss-making delivery as a success and
+    // the cost of refusals — the thing the COD gate exists to reduce — is
+    // invisible.
+    const order = await db.withTenant(tenantId, async (c) => {
+      const { rows } = await c.query<{ status: string; rto_freight_cost_minor: string }>(
+        "SELECT status, rto_freight_cost_minor FROM sales_order WHERE id = $1",
+        [orderId],
+      );
+      return rows[0]!;
+    });
+    expect(order.status).toBe("returned_to_origin");
+    expect(Number(order.rto_freight_cost_minor)).toBe(5_000); // 2,500 out + 2,500 back
+  });
+
+  it("teaches the COD risk score from a refused delivery (R9.5)", async () => {
+    // The loop the PRD calls the compounding data asset: a refusal that never
+    // reaches the risk score teaches the next decision nothing, which is how
+    // a repeat refuser keeps being offered cash on delivery.
+    const customerId = randomUUID();
+    const orderId = randomUUID();
+    await db.withTenant(tenantId, async (c) => {
+      const { rows: ch } = await c.query<{ id: string }>(
+        "SELECT id FROM channel WHERE kind <> 'pos' LIMIT 1",
+      );
+      await c.query(
+        `INSERT INTO customer (id, tenant_id, full_name, phone)
+         VALUES ($1,$2,'COD Refuser',$3)`,
+        [customerId, tenantId, `+97150${suffix.slice(0, 6)}`],
+      );
+      await c.query(
+        `INSERT INTO sales_order (id, tenant_id, channel_id, order_no, status, currency,
+                                  subtotal_minor, discount_minor, tax_minor, total_minor,
+                                  location_id, customer_id, payment_method, placed_at)
+         VALUES ($1,$2,$3,$4,'fulfilled','AED',5000,0,0,5000,$5,$6,'cod', now())`,
+        [orderId, tenantId, ch[0]!.id, `RTO2-${suffix}`, locationId, customerId],
+      );
+    });
+
+    const shipment = await post(`/v1/orders/${orderId}/shipments`, {
+      courier: "mock",
+      address: { line1: "Villa 9", city: "Sharjah" },
+      codAmountMinor: 5000,
+      outboundFreightMinor: 2_500,
+    });
+    const { shipmentId } = shipment.json();
+
+    const shipping = new ShippingService(db, new Map([["mock", new MockCourier(["returned"])]]));
+    await shipping.refreshTracking(tenantId, shipmentId);
+
+    const risk = (await get(`/v1/customers/${customerId}/cod-risk`)).json();
+    expect(risk.history.refused).toBe(1);
+
+    const outcome = await db.withTenant(tenantId, async (c) => {
+      const { rows } = await c.query<{
+        outcome: string; freight_cost_minor: string; expected_minor: string; area: string | null;
+      }>(
+        `SELECT outcome, freight_cost_minor, expected_minor, area
+           FROM cod_delivery_outcome WHERE order_id = $1`,
+        [orderId],
+      );
+      return rows[0]!;
+    });
+    expect(outcome.outcome).toBe("refused");
+    // returnFreightMinor defaulted to the outbound figure: a refusal costs a
+    // round trip, not one leg.
+    expect(Number(outcome.freight_cost_minor)).toBe(5_000);
+    expect(Number(outcome.expected_minor)).toBe(5000);
+    expect(outcome.area).toBe("Sharjah");
+  });
+
+  it("leaves a cancelled order alone rather than dragging it back", async () => {
+    // An order that moved on by another path must not be pulled into
+    // `returned_to_origin` by a late courier poll.
+    const orderId = randomUUID();
+    await db.withTenant(tenantId, async (c) => {
+      const { rows: ch } = await c.query<{ id: string }>(
+        "SELECT id FROM channel WHERE kind <> 'pos' LIMIT 1",
+      );
+      await c.query(
+        `INSERT INTO sales_order (id, tenant_id, channel_id, order_no, status, currency,
+                                  subtotal_minor, discount_minor, tax_minor, total_minor,
+                                  location_id, placed_at)
+         VALUES ($1,$2,$3,$4,'fulfilled','AED',5000,0,0,5000,$5, now())`,
+        [orderId, tenantId, ch[0]!.id, `RTO3-${suffix}`, locationId],
+      );
+    });
+    const { shipmentId } = (
+      await post(`/v1/orders/${orderId}/shipments`, {
+        courier: "mock", address: { city: "Dubai" }, codAmountMinor: 0,
+      })
+    ).json();
+
+    await db.withTenant(tenantId, (c) =>
+      c.query("UPDATE sales_order SET status = 'cancelled' WHERE id = $1", [orderId]),
+    );
+
+    const shipping = new ShippingService(db, new Map([["mock", new MockCourier(["returned"])]]));
+    await shipping.refreshTracking(tenantId, shipmentId);
+
+    const status = await db.withTenant(tenantId, async (c) => {
+      const { rows } = await c.query<{ status: string }>(
+        "SELECT status FROM sales_order WHERE id = $1", [orderId],
+      );
+      return rows[0]!.status;
+    });
+    expect(status).toBe("cancelled");
   });
 });

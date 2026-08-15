@@ -13,6 +13,12 @@ import {
   type StoredLocation,
   type StoredSession,
 } from "./lib/session.js";
+import {
+  clearTenantConfig,
+  resolveVatRate,
+  saveTenantConfig,
+  type VatRate,
+} from "./lib/tenantConfig.js";
 import { LangToggle, useLang } from "./components/LangProvider.js";
 import { LoginView } from "./components/LoginView.js";
 import { LocationPicker } from "./components/LocationPicker.js";
@@ -36,6 +42,13 @@ export function App() {
   // non-Error failure — rendered as the localized generic fallback.
   const [setupError, setSetupError] = useState<string | null>(null);
 
+  /**
+   * The tenant's VAT rate (R7.4). Read from register-local storage at startup,
+   * so a reload — including a reload with no network, mid-shift — keeps
+   * pricing at the tenant's real rate rather than an assumed 5%.
+   */
+  const [vatRate, setVatRate] = useState<VatRate>(() => resolveVatRate());
+
   // Token lives in a ref so the api client closure always sees the latest.
   const tokenRef = useRef<string | null>(session?.accessToken ?? null);
   tokenRef.current = session?.accessToken ?? null;
@@ -56,6 +69,10 @@ export function App() {
 
   const logout = useCallback(() => {
     clearSession();
+    // Drop the cached rate with the session: the next sign-in may be a
+    // different tenant on a different rate, and inheriting this one would be
+    // the same defect wearing a different number.
+    clearTenantConfig();
     setSession(null);
     setPhase({ name: "login" });
   }, []);
@@ -92,8 +109,16 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
-  const handleLoggedIn = useCallback((s: StoredSession) => {
+  const handleLoggedIn = useCallback((s: StoredSession, vatRateBp: number | undefined) => {
     saveSession(s);
+    // Cache the issued rate for the offline shift ahead. If the server sent
+    // none (older API) or an unusable value, resolveVatRate reports the
+    // flagged fallback and the sale screen shows the cashier that it is one.
+    if (vatRateBp !== undefined && saveTenantConfig({ vatRateBp })) {
+      setVatRate({ rateBp: vatRateBp, source: "tenant" });
+    } else {
+      setVatRate(resolveVatRate());
+    }
     setSession(s);
     setPhase({ name: "setup", messageKey: "setup.starting" });
   }, []);
@@ -147,6 +172,7 @@ export function App() {
       deviceId={phase.deviceId}
       location={phase.location}
       cashierEmail={session.email}
+      vatRate={vatRate}
       onSignOut={logout}
     />
   );

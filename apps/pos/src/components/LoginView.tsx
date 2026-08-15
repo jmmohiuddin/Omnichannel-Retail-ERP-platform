@@ -6,7 +6,12 @@ import { LangToggle, useLang } from "./LangProvider.js";
 
 interface Props {
   api: ApiClient;
-  onLoggedIn: (session: StoredSession) => void;
+  /**
+   * `vatRateBp` is the tenant's VAT rate as the server issued it (R7.4).
+   * Undefined when the API did not send one — the caller decides what to do,
+   * this view does not invent a rate.
+   */
+  onLoggedIn: (session: StoredSession, vatRateBp: number | undefined) => void;
 }
 
 /** Errors are stored as keys so they re-render when the language flips. */
@@ -27,7 +32,7 @@ export function LoginView({ api, onLoggedIn }: Props) {
     setError(null);
     try {
       const res = await api.login({ slug: slug.trim(), email: email.trim(), password });
-      onLoggedIn({ ...res, slug: slug.trim(), email: email.trim() });
+      onLoggedIn({ ...res, slug: slug.trim(), email: email.trim() }, res.vatRateBp);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(

@@ -18,6 +18,21 @@ export interface GatewayWebhookEvent {
   gatewayRef: string;
 }
 
+/**
+ * Authoritative status of an intent, pulled from the gateway rather than
+ * pushed by it (R6.2). `succeeded` carries the amount the gateway actually
+ * took: the reconciler refuses to capture anything it cannot match against the
+ * intent, because a webhook that never arrived is exactly the situation where
+ * the two could have diverged.
+ */
+export type GatewayPaymentStatus =
+  | { state: "succeeded"; amountMinor: number; currency: string }
+  | { state: "failed"; reason?: string }
+  /** Gateway still working — a slow authorization, not a lost webhook. */
+  | { state: "pending" }
+  /** Gateway does not recognise the ref, or answered something we cannot act on. */
+  | { state: "unknown"; reason?: string };
+
 export class WebhookVerificationError extends Error {
   constructor(message: string) {
     super(message);
@@ -39,6 +54,15 @@ export interface PaymentGatewayPort {
    * Throws WebhookVerificationError on any signature problem.
    */
   parseWebhook(rawBody: string, signatureHeader: string | undefined): GatewayWebhookEvent;
+  /**
+   * Poll the gateway for an intent's real status (R6.2 reconciliation).
+   *
+   * Optional on purpose. Webhooks remain the primary path; this is the safety
+   * net for the delivery that never arrived. An adapter whose gateway exposes
+   * no status/query API simply omits it, and the reconciler flags its stuck
+   * intents for a human instead of guessing.
+   */
+  fetchStatus?(gatewayRef: string): Promise<GatewayPaymentStatus>;
 }
 
 /**
@@ -47,6 +71,11 @@ export interface PaymentGatewayPort {
  */
 export class MockGateway implements PaymentGatewayPort {
   readonly key = "mock";
+  /**
+   * Stands in for the remote gateway's ledger. A real adapter calls the
+   * gateway's query API here; tests and demos drive it with `setStatus`.
+   */
+  private readonly remoteStatus = new Map<string, GatewayPaymentStatus>();
 
   constructor(private readonly webhookSecret: string) {
     if (webhookSecret.length < 16) throw new Error("webhook secret too short");
@@ -56,10 +85,20 @@ export class MockGateway implements PaymentGatewayPort {
     orderId: string; orderNo: string; amountMinor: number; currency: string;
   }): Promise<GatewayIntent> {
     const gatewayRef = `mock_${randomUUID()}`;
+    this.remoteStatus.set(gatewayRef, { state: "pending" });
     return {
       gatewayRef,
       redirectUrl: `https://pay.mock.invalid/checkout/${gatewayRef}?amount=${req.amountMinor}&cur=${req.currency}`,
     };
+  }
+
+  /** Test/demo hook: what the gateway will report for this ref. */
+  setStatus(gatewayRef: string, status: GatewayPaymentStatus): void {
+    this.remoteStatus.set(gatewayRef, status);
+  }
+
+  async fetchStatus(gatewayRef: string): Promise<GatewayPaymentStatus> {
+    return this.remoteStatus.get(gatewayRef) ?? { state: "unknown", reason: "no such ref" };
   }
 
   sign(rawBody: string): string {

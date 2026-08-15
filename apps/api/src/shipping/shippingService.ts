@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { isPgError, type Db } from "../db.js";
 import { PgInventoryService } from "../inventory/pgInventory.js";
+import { NotificationService } from "../notify/notificationService.js";
+import { CodService } from "../sales/codService.js";
 import type { CourierPort, ShipmentStatus, TrackingEvent } from "./courierPort.js";
 
 export class ShippingError extends Error {
@@ -54,6 +56,9 @@ export class ShippingService {
     private readonly db: Db,
     private readonly couriers: Map<string, CourierPort>,
     private readonly inventory: PgInventoryService = new PgInventoryService(db),
+    private readonly notifications: NotificationService = new NotificationService(db),
+    /** Same defaulting pattern: RTO feeds the COD reliability history (R9.5). */
+    private readonly cod: CodService = new CodService(db),
   ) {}
 
   private courierFor(key: string): CourierPort {
@@ -66,14 +71,22 @@ export class ShippingService {
     tenantId: string,
     userId: string,
     orderId: string,
-    input: { courier: string; address: Record<string, unknown>; codAmountMinor?: number },
+    input: {
+      courier: string;
+      address: Record<string, unknown>;
+      codAmountMinor?: number;
+      /** What the courier charges to carry it out (R5.6). */
+      outboundFreightMinor?: number;
+      /** What a failed leg costs to bring back. Defaults to the outbound. */
+      returnFreightMinor?: number;
+    },
   ): Promise<{ shipmentId: string; trackingNo: string; labelUrl: string | null; status: ShipmentStatus }> {
     const courier = this.courierFor(input.courier);
     const codAmountMinor = input.codAmountMinor ?? 0;
     try {
       return await this.db.withTenant(tenantId, async (c) => {
-        const order = await c.query<{ status: string; order_no: string }>(
-          "SELECT status, order_no FROM sales_order WHERE id = $1 FOR UPDATE",
+        const order = await c.query<{ status: string; order_no: string; customer_id: string | null }>(
+          "SELECT status, order_no, customer_id FROM sales_order WHERE id = $1 FOR UPDATE",
           [orderId],
         );
         const head = order.rows[0];
@@ -107,10 +120,17 @@ export class ShippingService {
         await c.query(
           `INSERT INTO shipment
              (id, tenant_id, order_id, courier, tracking_no, label_url, status,
-              address, cod_amount_minor, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,'created',$7,$8,$9)`,
+              address, cod_amount_minor, created_by,
+              outbound_freight_minor, return_freight_minor)
+           VALUES ($1,$2,$3,$4,$5,$6,'created',$7,$8,$9,$10,$11)`,
           [shipmentId, tenantId, orderId, input.courier, booked.trackingNo,
-           booked.labelUrl ?? null, JSON.stringify(input.address), codAmountMinor, userId],
+           booked.labelUrl ?? null, JSON.stringify(input.address), codAmountMinor, userId,
+           // What the outbound leg costs. Captured at booking because that is
+           // when the courier quotes it; the return leg (R5.6) is only known
+           // if the delivery fails, and defaults to the same figure — a round
+           // trip is what a refusal actually costs.
+           input.outboundFreightMinor ?? 0,
+           input.returnFreightMinor ?? input.outboundFreightMinor ?? 0],
         );
         await c.query(
           `INSERT INTO shipment_event (id, tenant_id, shipment_id, status, description)
@@ -125,6 +145,42 @@ export class ShippingService {
            JSON.stringify({ shipmentId, orderId, courier: input.courier,
                             trackingNo: booked.trackingNo, codAmountMinor })],
         );
+
+        // R5.3 + R13.3: the customer learns the tracking number here, in the
+        // same transaction that books the shipment. This is the dispatch
+        // moment — the courier has accepted the parcel and issued a tracking
+        // number, and the order was already 'fulfilled' (picked and packed)
+        // before we got this far.
+        if (head.customer_id) {
+          const { rows: recipient } = await c.query<{ full_name: string; email: string | null }>(
+            "SELECT full_name, email FROM customer WHERE id = $1",
+            [head.customer_id],
+          );
+          const customer = recipient[0];
+          if (customer?.email) {
+            const { rows: tenantRows } = await c.query<{ name: string }>(
+              "SELECT name FROM tenant WHERE id = $1",
+              [tenantId],
+            );
+            await this.notifications.enqueueWith(c, tenantId, {
+              request: {
+                template: "dispatch_tracking",
+                payload: {
+                  tenantName: tenantRows[0]?.name ?? "",
+                  customerName: customer.full_name,
+                  orderNo: head.order_no,
+                  courier: input.courier,
+                  trackingNo: booked.trackingNo,
+                },
+              },
+              dedupeKey: `dispatch_tracking:${shipmentId}`,
+              recipient: customer.email,
+              customerId: head.customer_id,
+              orderId,
+            });
+          }
+        }
+
         return {
           shipmentId,
           trackingNo: booked.trackingNo,
@@ -284,11 +340,77 @@ export class ShippingService {
       });
     }
 
+    // R5.6: the order is not fulfilled — its goods came back. Saying so is
+    // the difference between a merchant who can see their failed deliveries
+    // and one whose order list quietly reports them as successes.
+    //
+    // Guarded on the shipped states only: an order already cancelled or
+    // refunded by another path has moved on, and RTO must not drag it back.
+    await c.query(
+      `UPDATE sales_order
+          SET status = 'returned_to_origin'
+        WHERE id = $1 AND status IN ('fulfilling','fulfilled','completed','confirmed')`,
+      [orderId],
+    );
+
+    // R5.6: record the freight the failed leg cost, against the order. This
+    // is the number that makes the COD gate (R5.5) measurable — without it,
+    // "did gating reduce our losses" has no denominator.
+    const { rows: freight } = await c.query<{
+      outbound: string; ret: string; cod_amount_minor: string; address: Record<string, unknown>;
+    }>(
+      `SELECT outbound_freight_minor AS outbound, return_freight_minor AS ret,
+              cod_amount_minor, address
+         FROM shipment WHERE id = $1`,
+      [shipmentId],
+    );
+    const legs = freight[0];
+    const roundTripMinor = Number(legs?.outbound ?? 0) + Number(legs?.ret ?? 0);
+    if (roundTripMinor > 0) {
+      await c.query(
+        `UPDATE sales_order
+            SET rto_freight_cost_minor = rto_freight_cost_minor + $2
+          WHERE id = $1`,
+        [orderId, roundTripMinor],
+      );
+    }
+
+    // Feed the COD reliability history (R9.5). A refusal that never reaches
+    // the risk score teaches the next decision nothing, which is how a
+    // repeat refuser keeps being offered COD.
+    const { rows: orderRows } = await c.query<{
+      customer_id: string | null; payment_method: string | null;
+    }>(
+      "SELECT customer_id, payment_method FROM sales_order WHERE id = $1",
+      [orderId],
+    );
+    const order = orderRows[0];
+    if (order?.payment_method === "cod") {
+      const address = (legs?.address ?? {}) as { city?: string; emirate?: string };
+      await this.cod.recordOutcomeWith(c, tenantId, {
+        orderId,
+        shipmentId,
+        ...(order.customer_id ? { customerId: order.customer_id } : {}),
+        // The courier told us the goods came back, not why. `refused` is the
+        // honest default for a COD return and is what the risk score counts;
+        // a staff member correcting it to `undeliverable` scores identically,
+        // so nothing rests on guessing right.
+        outcome: "refused",
+        collectedMinor: 0,
+        expectedMinor: Number(legs?.cod_amount_minor ?? 0),
+        freightCostMinor: roundTripMinor,
+        ...(address.city ? { area: address.city } : {}),
+        ...(address.emirate ? { emirate: address.emirate } : {}),
+        note: `RTO on shipment ${shipmentId}`,
+      });
+    }
+
     await c.query(
       `INSERT INTO outbox (id, tenant_id, aggregate, event_type, payload)
        VALUES ($1,$2,$3,'order.rto',$4)`,
       [randomUUID(), tenantId, `order:${orderId}`,
-       JSON.stringify({ orderId, shipmentId, lines: lines.length })],
+       JSON.stringify({ orderId, shipmentId, lines: lines.length,
+                        freightCostMinor: roundTripMinor })],
     );
   }
 

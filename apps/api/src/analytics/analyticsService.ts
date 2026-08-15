@@ -144,7 +144,7 @@ export class AnalyticsService {
   /** Daily exception digest (FP-007): refund and approval activity for review. */
   async exceptions(tenantId: string, sinceHours = 24): Promise<Record<string, unknown>> {
     return this.db.withTenant(tenantId, async (c) => {
-      const [refunds, approvals] = await Promise.all([
+      const [refunds, approvals, payments] = await Promise.all([
         c.query(
           `SELECT r.id, r.amount_minor AS "amountMinor", r.reason, r.status,
                   u.full_name AS "requestedBy", r.created_at AS "createdAt"
@@ -163,11 +163,27 @@ export class AnalyticsService {
             ORDER BY a.requested_at DESC`,
           [sinceHours],
         ),
+        // R6.2: what the reconciler could not repair on its own. Deliberately
+        // NOT filtered by the window — an unresolved payment exception is
+        // still unresolved a week later, and money stuck in an unknown state
+        // is exactly the thing that must not scroll off a dashboard.
+        c.query(
+          `SELECT id, intent_id AS "intentId", order_id AS "orderId", gateway,
+                  reason, detail, seen_count AS "seenCount",
+                  first_seen_at AS "firstSeenAt", last_seen_at AS "lastSeenAt"
+             FROM payment_reconciliation_exception
+            WHERE resolved_at IS NULL
+            ORDER BY first_seen_at`,
+        ),
       ]);
       return {
         windowHours: sinceHours,
         refunds: refunds.rows.map((r) => ({ ...r, amountMinor: Number(r.amountMinor) })),
         approvals: approvals.rows,
+        paymentReconciliation: payments.rows.map((r) => ({
+          ...r,
+          seenCount: Number(r.seenCount),
+        })),
       };
     });
   }

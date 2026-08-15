@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { z } from "zod";
-import { LedgerError } from "@omniretail/domain";
+import { EMIRATES, LedgerError, RCM_DEVICE_CLASSES } from "@omniretail/domain";
 import { Db } from "./db.js";
 import { AuthError, AuthService } from "./auth/service.js";
 import { TokenService, type AccessClaims } from "./auth/tokens.js";
@@ -19,6 +19,7 @@ import { ReceivingService } from "./inventory/receivingService.js";
 import { SaleError, SalesService } from "./sales/salesService.js";
 import { RefundError, RefundService } from "./sales/refundService.js";
 import { WebOrderService } from "./sales/webOrderService.js";
+import { CodError, CodService } from "./sales/codService.js";
 import { FulfillmentError, FulfillmentService } from "./sales/fulfillmentService.js";
 import { OpsError, OpsService } from "./inventory/opsService.js";
 import { AnalyticsService } from "./analytics/analyticsService.js";
@@ -32,6 +33,7 @@ import { PaymentError, PaymentService } from "./payments/paymentService.js";
 import { MockCourier } from "./shipping/courierPort.js";
 import { ShippingError, ShippingService } from "./shipping/shippingService.js";
 import { EInvoiceService } from "./einvoice/einvoiceService.js";
+import { CreditNoteError, CreditNoteService } from "./einvoice/creditNoteService.js";
 import { AuditService } from "./audit/auditService.js";
 import { UnitService } from "./inventory/unitService.js";
 import { PurchasingError, PurchasingService } from "./purchasing/purchasingService.js";
@@ -40,10 +42,15 @@ import { GiftCardError, GiftCardService } from "./crm/giftCardService.js";
 import { StoreCreditError, StoreCreditService } from "./crm/storeCreditService.js";
 import { deepHealth } from "./observability/deepHealth.js";
 import { registerRateLimit } from "./observability/rateLimit.js";
+import {
+  NoopErrorReporter,
+  type ErrorReporter,
+} from "./observability/errorReporter.js";
 import { AiBudgetError, AiGateway, StubProvider } from "./ai/gateway.js";
 import { AnthropicProvider } from "./ai/anthropicProvider.js";
 import { generateDailyDigest } from "./ai/digest.js";
 import { CustomerAuthError, CustomerAuthService } from "./customer/customerAuthService.js";
+import { RcmError, RcmService } from "./tax/rcmService.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -81,6 +88,12 @@ const productSchema = z.object({
   tracking: z.enum(["none", "batch", "serialized"]).default("none"),
   description: z.string().optional(),
   categoryId: z.string().uuid().optional(),
+  /**
+   * Electronic-device class under Cabinet Decision 91/2023 (R7.3). Absent
+   * means "not a qualifying device" — an accessory, a SIM, a service — which
+   * is the common case, so a shop that never sells B2B never sets it.
+   */
+  deviceClass: z.enum(RCM_DEVICE_CLASSES).optional(),
 });
 
 const variantSchema = z.object({
@@ -123,10 +136,17 @@ export interface PgAppConfig {
   anthropicApiKey?: string;
   /** HMAC secret for the mock payment gateway's webhooks (dev default). */
   paymentWebhookSecret?: string;
+  /**
+   * Where unhandled failures are reported (R12.10, R14.6). Defaults to the
+   * no-op so tests and local runs stay silent; main.ts supplies the real one
+   * from SENTRY_DSN.
+   */
+  errorReporter?: ErrorReporter;
 }
 
 export function buildPgApp(config: PgAppConfig) {
   const app = Fastify({ logger: false });
+  const errors = config.errorReporter ?? new NoopErrorReporter();
   const db = new Db(config.databaseUrl);
   const tokens = new TokenService(config.jwtSecret);
   const audit = new AuditService(db);
@@ -137,11 +157,14 @@ export function buildPgApp(config: PgAppConfig) {
   const giftCards = new GiftCardService(db);
   const storeCredit = new StoreCreditService(db);
   const customerAuth = new CustomerAuthService(db);
-  const sales = new SalesService(db, inventory, loyalty, pricing, giftCards, storeCredit);
+  const rcm = new RcmService(db);
+  const cod = new CodService(db);
+  const sales = new SalesService(db, inventory, loyalty, pricing, giftCards, storeCredit, rcm);
   const receiving = new ReceivingService(db, inventory);
   const units = new UnitService(db, inventory);
   const purchasing = new PurchasingService(db, receiving);
-  const refunds = new RefundService(db, inventory, audit);
+  const creditNotes = new CreditNoteService(db);
+  const refunds = new RefundService(db, inventory, audit, creditNotes);
   const webOrders = new WebOrderService(db, inventory, pricing);
   const fulfillment = new FulfillmentService(db, inventory);
   const ops = new OpsService(db, inventory, audit);
@@ -171,13 +194,16 @@ export function buildPgApp(config: PgAppConfig) {
   void registerRateLimit(app);
 
   app.addHook("onClose", async () => {
+    // Flush first: a crash-triggered shutdown is exactly when the queued
+    // events matter most, and closing the pool can take the process with it.
+    await errors.flush();
     await db.close();
   });
 
   const sendZodError = (reply: { code: (n: number) => { send: (b: unknown) => unknown } }, issues: unknown) =>
     reply.code(400).send({ error: "VALIDATION", issues });
 
-  app.setErrorHandler((err, _req, reply) => {
+  app.setErrorHandler((err, req, reply) => {
     if (err instanceof LedgerError) {
       const status =
         err.code === "DUPLICATE_MOVEMENT" ? 409
@@ -297,6 +323,32 @@ export function buildPgApp(config: PgAppConfig) {
     if (err instanceof EventError) {
       return reply.code(400).send({ error: err.code, message: err.message });
     }
+    if (err instanceof CodError) {
+      // 422, not 400: the request is well-formed and the shopper did nothing
+      // wrong — this payment method is simply not available to them. The body
+      // carries the reason and the alternatives so checkout can offer a next
+      // step instead of a dead end.
+      const status = err.code === "ORDER_NOT_FOUND" ? 404 : 422;
+      return reply
+        .code(status)
+        .send({ error: err.code, message: err.message, ...(err.details ?? {}) });
+    }
+    if (err instanceof CreditNoteError) {
+      const status =
+        err.code === "ORDER_NOT_FOUND" ? 404
+        : err.code === "EXCEEDS_INVOICE" ? 422
+        : 400;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
+    if (err instanceof RcmError) {
+      const status =
+        err.code === "CUSTOMER_NOT_FOUND" || err.code === "DECLARATION_NOT_FOUND" ? 404
+        : err.code === "ALREADY_VERIFIED" || err.code === "ALREADY_REVOKED" ? 409
+        // NOT_A_BUSINESS_CUSTOMER and TRN_REQUIRED are both "fix the customer
+        // record first" — a precondition the user can satisfy in one step.
+        : 422;
+      return reply.code(status).send({ error: err.code, message: err.message });
+    }
     if (err instanceof RefundError) {
       const status =
         err.code === "ORDER_NOT_FOUND" || err.code === "APPROVAL_NOT_FOUND" ? 404
@@ -305,12 +357,26 @@ export function buildPgApp(config: PgAppConfig) {
         : 422;
       return reply.code(status).send({ error: err.code, message: err.message });
     }
+    // Everything above is a typed, expected failure answered with a 4xx — the
+    // client did something we have an answer for. Reaching here means we did
+    // not, so this is the only branch that pages a human (R12.10, R14.6).
     app.log.error(err);
+    errors.captureException(err, {
+      transaction: `${req.method} ${req.routeOptions?.url ?? req.url}`,
+      ...(req.auth?.tenantId ? { tenantId: req.auth.tenantId } : {}),
+      ...(req.auth?.userId ? { userId: req.auth.userId } : {}),
+      statusCode: 500,
+    });
     return reply.code(500).send({ error: "INTERNAL" });
   });
 
   // ---- public ----
   app.get("/health", async () => ({ status: "ok" }));
+
+  // `/healthz` is the path the availability NFR names as the uptime monitor's
+  // target (PRD §11). Same answer as /health — an alias, so a monitor pointed
+  // at either one is measuring the same thing.
+  app.get("/healthz", async () => ({ status: "ok" }));
 
   // Deep health: proves the app role has the exact privileges the security
   // model rests on (non-superuser, no BYPASSRLS) and that migrations ran.
@@ -376,6 +442,9 @@ export function buildPgApp(config: PgAppConfig) {
         lines: z.array(
           z.object({ variantId: z.string().uuid(), quantity: z.number().positive().max(100) }),
         ).min(1).max(50),
+        // R5.5. Defaults to `gateway` so an older storefront build keeps
+        // working; a shopper choosing COD goes through the gate.
+        paymentMethod: z.enum(["gateway", "cod"]).optional(),
       })
       .safeParse(req.body);
     if (!parsed.success) return sendZodError(reply, parsed.error.issues);
@@ -390,7 +459,28 @@ export function buildPgApp(config: PgAppConfig) {
     if (!tenant) return reply.code(404).send({ error: "NOT_FOUND" });
     const parsed = z.object({ gateway: z.string().default("mock") }).safeParse(req.body ?? {});
     if (!parsed.success) return sendZodError(reply, parsed.error.issues);
-    const intent = await payments.createIntent(tenant.id, orderId, parsed.data.gateway);
+    // A COD order pays only its advance here (R5.5); the balance is collected
+    // at the door. Read from the order rather than trusted from the client —
+    // the amount to charge is never the caller's to decide.
+    const due = await db.withTenant(tenant.id, async (c) => {
+      const { rows } = await c.query<{
+        payment_method: string | null; cod_advance_required_minor: string;
+      }>(
+        `SELECT payment_method, cod_advance_required_minor
+           FROM sales_order WHERE id = $1`,
+        [orderId],
+      );
+      return rows[0];
+    });
+    if (!due) return reply.code(404).send({ error: "NOT_FOUND" });
+    const intent = await payments.createIntent(
+      tenant.id,
+      orderId,
+      parsed.data.gateway,
+      due.payment_method === "cod"
+        ? { amountMinor: Number(due.cod_advance_required_minor) }
+        : {},
+    );
     return reply.code(201).send(intent);
   });
 
@@ -561,14 +651,47 @@ export function buildPgApp(config: PgAppConfig) {
       await db.withTenant(req.auth.tenantId, (c) =>
         c.query(
           `INSERT INTO product (id, tenant_id, name, slug, tracking, description,
-                                category_id, status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'active')`,
+                                category_id, status, device_class)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8)`,
           [id, req.auth.tenantId, parsed.data.name, parsed.data.slug,
            parsed.data.tracking, parsed.data.description ?? null,
-           parsed.data.categoryId ?? null],
+           parsed.data.categoryId ?? null, parsed.data.deviceClass ?? null],
         ),
       );
       return reply.code(201).send({ id, ...parsed.data });
+    });
+
+    // The CD 91/2023 classification, editable on its own. Deliberately NOT
+    // folded into the general product PATCH: this is a tax attribute, and a
+    // change to it silently alters how future sales of the product are taxed,
+    // so it deserves its own auditable action rather than riding along with a
+    // description edit.
+    secured.put("/v1/products/:productId/device-class", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN" });
+      }
+      const { productId } = req.params as { productId: string };
+      const parsed = z
+        .object({ deviceClass: z.enum(RCM_DEVICE_CLASSES).nullable() })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const row = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `UPDATE product SET device_class = $2, updated_at = now()
+            WHERE id = $1 RETURNING id, device_class AS "deviceClass"`,
+          [productId, parsed.data.deviceClass],
+        );
+        return rows[0];
+      });
+      if (!row) return reply.code(404).send({ error: "NOT_FOUND" });
+      await audit.record(req.auth.tenantId, {
+        actorUserId: req.auth.userId,
+        action: "product.device_class.set",
+        entityType: "product",
+        entityId: productId,
+        after: { deviceClass: parsed.data.deviceClass },
+      });
+      return row;
     });
 
     secured.post("/v1/products/:productId/variants", async (req, reply) => {
@@ -838,9 +961,19 @@ export function buildPgApp(config: PgAppConfig) {
 
     secured.post("/v1/stock-units/:unitId/repair-out", async (req, reply) => {
       const { unitId } = req.params as { unitId: string };
-      const parsed = z.object({ note: z.string().max(300).optional() }).safeParse(req.body ?? {});
+      const parsed = z
+        .object({
+          note: z.string().max(300).optional(),
+          // Repairs get logged after the fact, and R10.7 extends the warranty
+          // from this timestamp — a wrong one shortens the customer's cover.
+          occurredAt: z.coerce.date().optional(),
+        })
+        .safeParse(req.body ?? {});
       if (!parsed.success) return sendZodError(reply, parsed.error.issues);
-      return units.repairOut(req.auth.tenantId, req.auth.userId, unitId, parsed.data.note);
+      return units.repairOut(
+        req.auth.tenantId, req.auth.userId, unitId,
+        parsed.data.note, parsed.data.occurredAt,
+      );
     });
 
     secured.post("/v1/stock-units/:unitId/repair-in", async (req, reply) => {
@@ -1436,6 +1569,27 @@ export function buildPgApp(config: PgAppConfig) {
       return { items: rows };
     });
 
+    // R9.3 business-customer fields. `fullName` stays the contact person;
+    // `legalName` is the entity a tax invoice is made out to, and the two
+    // genuinely differ (a buyer purchasing for their company).
+    const businessCustomerSchema = z.object({
+      isBusiness: z.boolean().optional(),
+      legalName: z.string().min(1).max(200).optional(),
+      // A UAE TRN is exactly 15 digits; the same constraint is enforced in the
+      // database, because a malformed TRN reaches the invoice and the FTA
+      // Audit File and nobody re-checks it by eye.
+      trn: z.string().regex(/^\d{15}$/, "a UAE TRN is 15 digits").optional(),
+      billingAddress: z
+        .object({
+          line1: z.string().max(200),
+          line2: z.string().max(200).optional(),
+          city: z.string().max(100).optional(),
+          emirate: z.enum(EMIRATES).optional(),
+          country: z.string().max(60).default("AE"),
+        })
+        .optional(),
+    });
+
     secured.post("/v1/customers", async (req, reply) => {
       const parsed = z
         .object({
@@ -1443,17 +1597,256 @@ export function buildPgApp(config: PgAppConfig) {
           phone: z.string().min(5).max(30).optional(),
           email: z.string().email().optional(),
         })
+        .merge(businessCustomerSchema)
         .safeParse(req.body);
       if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const d = parsed.data;
+      // Mirrors the DB constraint customer_business_has_legal_name: rejected
+      // here so the caller gets a field-level message rather than a 500.
+      if (d.isBusiness && !d.legalName) {
+        return reply.code(422).send({
+          error: "LEGAL_NAME_REQUIRED",
+          message: "a business customer needs a legal name for its tax invoices",
+        });
+      }
       const id = randomUUID();
       await db.withTenant(req.auth.tenantId, (c) =>
         c.query(
-          "INSERT INTO customer (id, tenant_id, full_name, phone, email) VALUES ($1,$2,$3,$4,$5)",
-          [id, req.auth.tenantId, parsed.data.fullName,
-           parsed.data.phone ?? null, parsed.data.email ?? null],
+          `INSERT INTO customer (id, tenant_id, full_name, phone, email,
+                                 is_business, legal_name, trn, billing_address)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [id, req.auth.tenantId, d.fullName, d.phone ?? null, d.email ?? null,
+           d.isBusiness ?? false, d.legalName ?? null, d.trn ?? null,
+           d.billingAddress ? JSON.stringify(d.billingAddress) : null],
         ),
       );
-      return reply.code(201).send({ id, ...parsed.data, loyaltyPoints: 0 });
+      return reply.code(201).send({ id, ...d, loyaltyPoints: 0 });
+    });
+
+    secured.patch("/v1/customers/:customerId/business", async (req, reply) => {
+      const { customerId } = req.params as { customerId: string };
+      const parsed = businessCustomerSchema.safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const d = parsed.data;
+      const updated = await db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `UPDATE customer
+              SET is_business     = coalesce($2, is_business),
+                  legal_name      = coalesce($3, legal_name),
+                  trn             = coalesce($4, trn),
+                  billing_address = coalesce($5, billing_address)
+            WHERE id = $1
+            RETURNING id, is_business AS "isBusiness", legal_name AS "legalName",
+                      trn, billing_address AS "billingAddress"`,
+          [customerId, d.isBusiness ?? null, d.legalName ?? null, d.trn ?? null,
+           d.billingAddress ? JSON.stringify(d.billingAddress) : null],
+        );
+        return rows[0];
+      });
+      if (!updated) return reply.code(404).send({ error: "NOT_FOUND" });
+      return updated;
+    });
+
+    // ---- cash-on-delivery policy and outcomes (R5.5, R9.5, R12.8) ----
+    secured.get("/v1/settings/cod-policy", async (req) => cod.policy(req.auth.tenantId));
+
+    secured.put("/v1/settings/cod-policy", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN" });
+      }
+      const parsed = z
+        .object({
+          enabled: z.boolean().optional(),
+          advanceThresholdMinor: z.number().int().nonnegative().optional(),
+          advanceMode: z.enum(["fixed", "percent"]).optional(),
+          advanceFixedMinor: z.number().int().nonnegative().optional(),
+          advancePercentBp: z.number().int().min(0).max(10_000).optional(),
+          riskCeiling: z.number().int().min(0).max(100).optional(),
+          // Explicitly nullable: null means "no cap", which is a different
+          // instruction from "leave it as it is".
+          maxOrderMinor: z.number().int().positive().nullable().optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const updated = await cod.updatePolicy(req.auth.tenantId, parsed.data);
+      await audit.record(req.auth.tenantId, {
+        actorUserId: req.auth.userId,
+        action: "cod.policy.updated",
+        entityType: "tenant",
+        entityId: req.auth.tenantId,
+        after: parsed.data,
+      });
+      return updated;
+    });
+
+    // What COD would cost this shopper, without placing an order — so the
+    // storefront can show the deposit before they commit rather than after.
+    secured.get("/v1/cod/quote", async (req, reply) => {
+      const parsed = z
+        .object({
+          totalMinor: z.coerce.number().int().nonnegative(),
+          customerId: z.string().uuid().optional(),
+        })
+        .safeParse(req.query);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return cod.quote(
+        req.auth.tenantId, parsed.data.totalMinor, parsed.data.customerId,
+      );
+    });
+
+    secured.get("/v1/customers/:customerId/cod-risk", async (req) => {
+      const { customerId } = req.params as { customerId: string };
+      return cod.riskFor(req.auth.tenantId, customerId);
+    });
+
+    // What happened at the door (R5.4, R9.5). The row this writes is what
+    // makes the next COD decision for this customer better-informed than the
+    // last, so it is the single most valuable thing staff record.
+    secured.post("/v1/orders/:orderId/cod-outcome", async (req, reply) => {
+      const { orderId } = req.params as { orderId: string };
+      const parsed = z
+        .object({
+          shipmentId: z.string().uuid().optional(),
+          customerId: z.string().uuid().optional(),
+          outcome: z.enum(["delivered", "refused", "undeliverable"]),
+          collectedMinor: z.number().int().nonnegative().optional(),
+          expectedMinor: z.number().int().nonnegative().optional(),
+          freightCostMinor: z.number().int().nonnegative().optional(),
+          area: z.string().max(100).optional(),
+          emirate: z.enum(EMIRATES).optional(),
+          note: z.string().max(500).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const result = await cod.recordOutcome(req.auth.tenantId, { orderId, ...parsed.data });
+      return reply.code(result.recorded ? 201 : 200).send(result);
+    });
+
+    secured.get("/v1/reports/cod-performance", async (req, reply) => {
+      // Cost figures are finance data; the same separation the rest of the
+      // reporting surface uses (R14.5, and the `finance:read` split the audit
+      // singled out as a good decision).
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN" });
+      }
+      const parsed = z
+        .object({ sinceDays: z.coerce.number().int().min(1).max(730).default(90) })
+        .safeParse(req.query);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return cod.performance(req.auth.tenantId, parsed.data.sinceDays);
+    });
+
+    // ---- supplier identity on every tax invoice (R7.1) ----
+    //
+    // R7.1 makes supplier name, ADDRESS and TRN mandatory on even a
+    // simplified consumer receipt. `tenant.trn` has existed since migration
+    // 007, but there was nowhere to put the address until 033 — so every
+    // receipt this system has printed was missing a required field. There was
+    // also no way to set the TRN through the API at all.
+    secured.get("/v1/settings/supplier", async (req) =>
+      db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `SELECT name, trn, address, vat_rate_bp AS "vatRateBp",
+                  default_locale AS "defaultLocale"
+             FROM tenant WHERE id = $1`,
+          [req.auth.tenantId],
+        );
+        return rows[0];
+      }),
+    );
+
+    secured.put("/v1/settings/supplier", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN" });
+      }
+      const parsed = z
+        .object({
+          trn: z.string().regex(/^\d{15}$/, "a UAE TRN is 15 digits").optional(),
+          address: z
+            .object({
+              line1: z.string().min(1).max(200),
+              line2: z.string().max(200).optional(),
+              city: z.string().max(100).optional(),
+              emirate: z.enum(EMIRATES).optional(),
+              country: z.string().max(60).default("AE"),
+            })
+            .optional(),
+          defaultLocale: z.enum(["en", "ar"]).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const d = parsed.data;
+      return db.withTenant(req.auth.tenantId, async (c) => {
+        const { rows } = await c.query(
+          `UPDATE tenant
+              SET trn            = coalesce($2, trn),
+                  address        = coalesce($3, address),
+                  default_locale = coalesce($4, default_locale)
+            WHERE id = $1
+            RETURNING name, trn, address, default_locale AS "defaultLocale"`,
+          [req.auth.tenantId, d.trn ?? null,
+           d.address ? JSON.stringify(d.address) : null, d.defaultLocale ?? null],
+        );
+        return rows[0];
+      });
+    });
+
+    // ---- reverse-charge declarations (R7.3 / R7.3a) ----
+    //
+    // Two separate steps on purpose. Capturing what the buyer declared and
+    // verifying that the buyer really is registered are different acts by
+    // different parties, and CD 91/2023 requires both — R7.3a is explicit
+    // that retaining the declaration alone is not sufficient. Collapsing them
+    // into one call would make it possible to record a verification that
+    // never happened.
+    secured.post("/v1/customers/:customerId/rcm-declarations", async (req, reply) => {
+      const { customerId } = req.params as { customerId: string };
+      const parsed = z
+        .object({
+          declaresResaleOrManufacture: z.boolean(),
+          declaresFtaRegistered: z.boolean(),
+          locale: z.enum(["en", "ar"]).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const record = await rcm.captureDeclaration(req.auth.tenantId, req.auth.userId, {
+        customerId,
+        ...parsed.data,
+      });
+      return reply.code(201).send(record);
+    });
+
+    secured.get("/v1/customers/:customerId/rcm-declarations", async (req) => {
+      const { customerId } = req.params as { customerId: string };
+      return { items: await rcm.listForCustomer(req.auth.tenantId, customerId) };
+    });
+
+    secured.post("/v1/rcm-declarations/:declarationId/verify", async (req, reply) => {
+      const { declarationId } = req.params as { declarationId: string };
+      const parsed = z
+        .object({
+          method: z.enum(["fta_portal", "certificate", "other"]),
+          // 'unavailable' is a real answer, distinct from 'failed': PRD Q10
+          // (what verification means a retailer has at the counter) is still
+          // open. Neither qualifies the sale; an auditor wants to know which.
+          outcome: z.enum(["verified", "failed", "unavailable"]),
+          reference: z.string().max(300).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return rcm.verifyDeclaration(req.auth.tenantId, req.auth.userId, {
+        declarationId,
+        ...parsed.data,
+      });
+    });
+
+    secured.post("/v1/rcm-declarations/:declarationId/revoke", async (req, reply) => {
+      const { declarationId } = req.params as { declarationId: string };
+      const parsed = z
+        .object({ reason: z.string().min(3).max(300) })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      return rcm.revokeDeclaration(req.auth.tenantId, declarationId, parsed.data.reason);
     });
 
     secured.post("/v1/gift-cards", async (req, reply) => {
@@ -1515,6 +1908,11 @@ export function buildPgApp(config: PgAppConfig) {
           customerId: z.string().uuid().optional(),
           offlineCreated: z.boolean().optional(),
           occurredAt: z.coerce.date().optional(),
+          // R7.3: the cashier marked this business-to-business with intent to
+          // resell. Asking is not getting — the four conditions of CD 91/2023
+          // are checked server-side and an unqualified sale falls back to
+          // standard-rated VAT with a reason returned to the till.
+          businessSale: z.boolean().optional(),
           lines: z.array(
             z.object({
               variantId: z.string().uuid(),
@@ -1523,6 +1921,10 @@ export function buildPgApp(config: PgAppConfig) {
               stockUnitId: z.string().uuid().optional(),
               discountMinor: z.number().int().nonnegative().optional(),
               discountApprovalId: z.string().uuid().optional(),
+              // R7.3a carve-outs: a zero-rated or exempt line stays outside
+              // the reverse charge even on a fully qualifying B2B sale.
+              zeroRated: z.boolean().optional(),
+              exempt: z.boolean().optional(),
             }),
           ).min(1),
           payments: z.array(
@@ -1562,6 +1964,10 @@ export function buildPgApp(config: PgAppConfig) {
           courier: z.string().default("mock"),
           address: z.record(z.unknown()).default({}),
           codAmountMinor: z.number().int().nonnegative().optional(),
+          // R5.6: what this delivery costs to attempt, so a failed one has a
+          // number to charge against the order rather than a shrug.
+          outboundFreightMinor: z.number().int().nonnegative().optional(),
+          returnFreightMinor: z.number().int().nonnegative().optional(),
         })
         .safeParse(req.body ?? {});
       if (!parsed.success) return sendZodError(reply, parsed.error.issues);
@@ -1586,6 +1992,50 @@ export function buildPgApp(config: PgAppConfig) {
       const doc = await einvoice.generateForOrder(req.auth.tenantId, orderId);
       if (!doc) return reply.code(404).send({ error: "NOT_FOUND" });
       return doc;
+    });
+
+    // ---- credit notes (R7.8) ----
+    //
+    // A refund issues one automatically inside the refund transaction; this
+    // route covers the cases where no money moves — correcting a mis-priced
+    // line, or a supply that was taxed when it should not have been.
+    secured.post("/v1/orders/:orderId/credit-notes", async (req, reply) => {
+      if (!requireRole(req, "owner", "manager")) {
+        return reply.code(403).send({ error: "FORBIDDEN" });
+      }
+      const { orderId } = req.params as { orderId: string };
+      const parsed = z
+        .object({
+          reason: z.string().min(3).max(300),
+          // Omit to credit the whole invoice.
+          lines: z
+            .array(
+              z.object({
+                orderLineId: z.string().uuid(),
+                quantity: z.number().positive(),
+              }),
+            )
+            .optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) return sendZodError(reply, parsed.error.issues);
+      const note = await creditNotes.issue(req.auth.tenantId, req.auth.userId, {
+        orderId,
+        ...parsed.data,
+      });
+      return reply.code(201).send(note);
+    });
+
+    secured.get("/v1/orders/:orderId/credit-notes", async (req) => {
+      const { orderId } = req.params as { orderId: string };
+      return { items: await creditNotes.listForOrder(req.auth.tenantId, orderId) };
+    });
+
+    secured.get("/v1/credit-notes/:creditNoteId", async (req, reply) => {
+      const { creditNoteId } = req.params as { creditNoteId: string };
+      const note = await creditNotes.read(req.auth.tenantId, creditNoteId);
+      if (!note) return reply.code(404).send({ error: "NOT_FOUND" });
+      return note;
     });
 
     secured.get("/v1/orders/:orderId/receipt", async (req, reply) => {

@@ -1,0 +1,95 @@
+name: Restore drill (R14.1)
+
+# Downloads the most recent complete production backup set and restores it into
+# a throwaway Postgres, then asserts the result is actually usable.
+#
+# PRD §11 requires the disaster-recovery restore to be exercised quarterly with
+# results recorded. Doing it by hand means it happens once and then never again;
+# doing it here means a backup that has silently stopped containing data gets
+# caught within three months instead of during an outage. It also produces the
+# measured restore time that the RTO claim rests on.
+#
+# Runs on the 1st of Jan/Apr/Jul/Oct — cron has no "quarterly", so the month
+# field enumerates the quarters explicitly.
+
+on:
+  schedule:
+    - cron: "0 4 1 1,4,7,10 *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    services:
+      postgres:
+        # Must track the SOURCE server's major version: pg_restore cannot load
+        # an archive produced by a newer Postgres into an older server. Same
+        # PG_MAJOR variable the client install uses, so the two cannot drift
+        # apart when Neon upgrades.
+        image: postgres:${{ vars.PG_MAJOR || '18' }}-alpine
+        env:
+          POSTGRES_USER: drill
+          POSTGRES_PASSWORD: drill
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U drill"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install matching Postgres client
+        env:
+          PG_MAJOR: ${{ vars.PG_MAJOR || '18' }}
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "postgresql-client-${PG_MAJOR}"
+          echo "/usr/lib/postgresql/${PG_MAJOR}/bin" >> "$GITHUB_PATH"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.BACKUP_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BACKUP_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.BACKUP_AWS_REGION || 'me-central-1' }}
+
+      - name: Restore the latest production backup and verify it
+        env:
+          BACKUP_S3_BUCKET: ${{ vars.BACKUP_S3_BUCKET }}
+          BACKUP_S3_PREFIX: ${{ vars.BACKUP_S3_PREFIX || 'omniretail_prod' }}
+          RESTORE_ADMIN_URL: postgresql://drill:drill@localhost:5432/postgres
+        run: |
+          set -euo pipefail
+          SET="$(./scripts/backup/latest-set.sh)"
+          echo "Drilling against $SET"
+          echo "## Restore drill: \`$SET\`" >> "$GITHUB_STEP_SUMMARY"
+          START=$(date -u +%s)
+          ./scripts/backup/restore-drill.sh --from "$SET" | tee drill.log
+          echo "Total wall clock: $(( $(date -u +%s) - START ))s"
+          {
+            echo '```'
+            cat drill.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The drill is only worth running if a failure is loud. A restore that
+      # cannot be verified means the backups are not backups.
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "::error title=RESTORE DRILL FAILED::The latest production backup" \
+               "could not be restored and verified. Treat as a P0:" \
+               "docs/runbooks/backup-restore.md"

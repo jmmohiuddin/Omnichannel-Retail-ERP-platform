@@ -3,6 +3,7 @@ import type { SalePaymentPayload } from "../lib/api.js";
 import type { MessageKey } from "../lib/i18n.js";
 import { formatMinor } from "../lib/money.js";
 import { buildReceiptDocument, type CompletedSale } from "../lib/receipt.js";
+import { formatRateBp } from "../lib/tenantConfig.js";
 import { useLang } from "./LangProvider.js";
 
 export type { CompletedSale };
@@ -90,7 +91,9 @@ export function ReceiptModal({ completed, onNewSale }: Props) {
             <dd className="mono">{formatMinor(totals.subtotalMinor, currency)}</dd>
           </div>
           <div>
-            <dt>{t("totals.vat")}</dt>
+            {/* A tax invoice must state the rate it was taxed at, and it is
+                the rate that produced this figure — never a fixed 5%. */}
+            <dt>{t("totals.vat", { rate: formatRateBp(doc.vatRateBp) })}</dt>
             <dd className="mono">{formatMinor(totals.taxMinor, currency)}</dd>
           </div>
           <div className="grand-total">

@@ -47,8 +47,22 @@ function serverReceipt(overrides: Partial<Receipt> = {}): Receipt {
   };
 }
 
-function onlineSale(receipt: Receipt | null): CompletedSale {
-  return { mode: "online", sale, receipt, lines: [cartLine], payments };
+/** `tillRateBp` is what the register would price at if the server sent no rate. */
+function onlineSale(receipt: Receipt | null, tillRateBp = 500): CompletedSale {
+  return { mode: "online", sale, receipt, lines: [cartLine], payments, vatRateBp: tillRateBp };
+}
+
+/** A queued offline sale priced at the tenant's rate. */
+function offlineAt(vatRateBp: number): CompletedSale {
+  return {
+    mode: "offline",
+    saleId: "uuid-rate",
+    totals: { subtotalMinor: 409429, taxMinor: 20471, totalMinor: 429900, itemCount: 1 },
+    lines: [cartLine],
+    payments,
+    currency: "AED",
+    vatRateBp,
+  };
 }
 
 describe("isValidTrn", () => {
@@ -134,6 +148,7 @@ describe("buildReceiptDocument — offline", () => {
     lines: [{ ...cartLine, imei: "356938035643809" }],
     payments,
     currency: "AED",
+    vatRateBp: 500,
   };
 
   it("is a sale record, never a tax invoice, and prints no TRN", () => {
@@ -161,6 +176,28 @@ describe("buildReceiptDocument — degraded fetch", () => {
     expect(doc.lines[0]?.description).toBe("iPhone 15 Pro 256GB");
     expect(doc.totals.totalMinor).toBe(609700);
     expect(doc.orderNo).toBe("SO-000123");
+  });
+});
+
+describe("buildReceiptDocument — the VAT rate on the paper (R7.4)", () => {
+  it("states the server's rate on an online receipt, not the till's assumption", () => {
+    const doc = buildReceiptDocument(onlineSale(serverReceipt({ vatRateBp: 750 }), 500));
+    expect(doc.vatRateBp).toBe(750);
+  });
+
+  it("falls back to the till's tenant rate when the receipt fetch failed", () => {
+    expect(buildReceiptDocument(onlineSale(null, 1000)).vatRateBp).toBe(1000);
+  });
+
+  it("ignores an unusable rate from the server rather than printing it", () => {
+    const doc = buildReceiptDocument(
+      onlineSale(serverReceipt({ vatRateBp: 12_000 }), 750),
+    );
+    expect(doc.vatRateBp).toBe(750);
+  });
+
+  it("prints the rate the offline sale was actually priced at", () => {
+    expect(buildReceiptDocument({ ...offlineAt(750) }).vatRateBp).toBe(750);
   });
 });
 
@@ -196,6 +233,7 @@ describe("buildReceiptDocument — the subtotal is net of VAT", () => {
       lines: [cartLine],
       payments,
       currency: "AED",
+      vatRateBp: 500,
     });
     // The bogus subtotalMinor above is ignored entirely.
     expect(doc.totals.subtotalMinor).toBe(8476);

@@ -34,6 +34,13 @@ export interface LoginResponse {
   refreshToken: string;
   userId: string;
   tenantId: string;
+  /**
+   * The tenant's VAT rate in basis points (500 = 5%) — `tenant.vat_rate_bp`.
+   * Optional on the wire because an API older than this build does not send
+   * it; the till then trades on the flagged statutory fallback rather than
+   * refusing to open (see lib/tenantConfig.ts).
+   */
+  vatRateBp?: number;
 }
 
 export interface LocationSummary {

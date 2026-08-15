@@ -101,7 +101,11 @@ describe.skipIf(!run)("POS sales", () => {
     });
     expect(receipt.statusCode).toBe(200);
     const r = receipt.json();
-    expect(r.kind).toBe("tax_invoice");
+    // `kind` now names WHICH tax document this is. R7.2 makes the two legally
+    // distinct — a simplified invoice may omit the buyer's details, a full one
+    // may not — so a single "tax_invoice" could not say which rules applied.
+    // A consumer cash sale is the simplified case.
+    expect(r.kind).toBe("simplified_tax_invoice");
     expect(r.lines).toHaveLength(2);
     expect(r.payments[0]).toMatchObject({ method: "cash", amountMinor: 437700 });
   });
