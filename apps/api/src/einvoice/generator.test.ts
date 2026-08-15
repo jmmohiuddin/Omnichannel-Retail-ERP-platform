@@ -141,7 +141,9 @@ describe("buildEInvoiceModel", () => {
 
 describe("validateModel", () => {
   it("passes a consistent full invoice with no errors", () => {
-    const model = buildEInvoiceModel(receipt(), { buyer: { name: "Buyer" } });
+    // Emirate included: since R7.6 a complete document carries one, and its
+    // absence is a warning (see "emirate of the supply" below).
+    const model = buildEInvoiceModel(receipt({ emirate: "DU" }), { buyer: { name: "Buyer" } });
     const { errors, warnings } = validateModel(model);
     expect(errors).toEqual([]);
     expect(warnings).toEqual([]);
@@ -233,5 +235,126 @@ describe("renderUbl", () => {
   it("is deterministic: same model renders byte-identical XML", () => {
     const model = buildEInvoiceModel(receipt());
     expect(renderUbl(model)).toBe(renderUbl(buildEInvoiceModel(receipt())));
+  });
+
+  it("renders the emirate on the supplier's postal address, flagged UNVERIFIED", () => {
+    const xml = renderUbl(buildEInvoiceModel(receipt({ emirate: "DU" })));
+    expect(xml).toContain("<cbc:CountrySubentity>Dubai</cbc:CountrySubentity>");
+    expect(xml).toContain("<cbc:IdentificationCode>AE</cbc:IdentificationCode>");
+    expect(xml).toMatch(/UNVERIFIED as a PINT-AE binding: AE-DU/);
+    // On the supplier, never smuggled onto the customer under the normal rule.
+    const supplierBlock = xml.slice(
+      xml.indexOf("<cac:AccountingSupplierParty>"),
+      xml.indexOf("</cac:AccountingSupplierParty>"),
+    );
+    expect(supplierBlock).toContain("<cac:PostalAddress>");
+  });
+
+  it("omits the postal address entirely when no emirate is attributed", () => {
+    const xml = renderUbl(buildEInvoiceModel(receipt()));
+    expect(xml).not.toContain("<cac:PostalAddress>");
+    expect(xml).not.toContain("<cbc:CountrySubentity>");
+  });
+});
+
+describe("emirate of the supply (R7.6)", () => {
+  it("carries the branch emirate onto the document and every line", () => {
+    const model = buildEInvoiceModel(receipt({ emirate: "DU" }));
+    expect(model.supplyEmirate).toEqual({
+      code: "DU",
+      name: "Dubai",
+      nameAr: "دبي",
+      isoSubdivision: "AE-DU",
+      basis: "fixed_establishment",
+      vatReturnBox: "1b",
+    });
+    expect(model.lines.map((l) => l.emirate)).toEqual(["DU", "DU"]);
+    expect(model.seller.address).toEqual({
+      countrySubentity: "Dubai",
+      countrySubentityCode: "AE-DU",
+      countryCode: "AE",
+    });
+  });
+
+  it("derives the document emirate from the lines when the header has none", () => {
+    const lines = receipt().lines.map((l) => ({ ...l, emirate: "SH" as const }));
+    const model = buildEInvoiceModel(receipt({ lines }));
+    expect(model.supplyEmirate?.code).toBe("SH");
+    expect(model.supplyEmirate?.vatReturnBox).toBe("1c");
+  });
+
+  it("does NOT move the supply to the customer's emirate — the branch rule", () => {
+    // A Dubai branch selling to a Sharjah customer is a Dubai supply.
+    const model = buildEInvoiceModel(receipt({ emirate: "DU" }), {
+      buyer: { name: "Sharjah Buyer LLC", trn: "100999999900003" },
+      customerEmirate: "SH",
+    });
+    expect(model.supplyEmirate?.code).toBe("DU");
+    expect(model.supplyEmirate?.basis).toBe("fixed_establishment");
+    expect(model.buyer?.address).toBeUndefined();
+    expect(model.seller.address?.countrySubentityCode).toBe("AE-DU");
+  });
+
+  it("reports by customer location only under the qualifying-registrant exception", () => {
+    const model = buildEInvoiceModel(receipt({ emirate: "DU" }), {
+      buyer: { name: "Online Shopper" },
+      customerEmirate: "RK",
+      qualifyingRegistrantEcommerce: true,
+    });
+    expect(model.supplyEmirate).toMatchObject({
+      code: "RK",
+      basis: "customer_location",
+      vatReturnBox: "1f",
+    });
+    // The address moves to the party the supply is attributed to.
+    expect(model.buyer?.address?.countrySubentityCode).toBe("AE-RK");
+    expect(model.seller.address).toBeUndefined();
+    const xml = renderUbl(model);
+    const customerBlock = xml.slice(xml.indexOf("<cac:AccountingCustomerParty>"));
+    expect(customerBlock).toContain("<cbc:CountrySubentity>Ras Al Khaimah</cbc:CountrySubentity>");
+  });
+
+  it("leaves the document unattributed (and warns) for a pre-R7.6 order", () => {
+    const model = buildEInvoiceModel(receipt());
+    expect(model.supplyEmirate).toBeUndefined();
+    expect(model.lines.every((l) => l.emirate === null)).toBe(true);
+    const { errors, warnings } = validateModel(model);
+    expect(errors).toEqual([]); // missing emirate never blocks the document
+    expect(warnings.some((w) => /emirate missing.*Box 1/s.test(w))).toBe(true);
+  });
+
+  it("warns when lines disagree on the emirate — Box 1 would be ambiguous", () => {
+    const [phone, charger] = receipt().lines;
+    const model = buildEInvoiceModel(
+      receipt({
+        emirate: "DU",
+        lines: [{ ...phone!, emirate: "DU" }, { ...charger!, emirate: "AJ" }],
+      }),
+      { buyer: { name: "Buyer" } },
+    );
+    expect(model.lines.map((l) => l.emirate)).toEqual(["DU", "AJ"]);
+    const { errors, warnings } = validateModel(model);
+    expect(errors).toEqual([]);
+    expect(warnings.some((w) => /lines carry emirate\(s\) AJ.*attributed to DU/s.test(w))).toBe(
+      true,
+    );
+  });
+
+  it("mixed line emirates with no header emirate leave the document unattributed", () => {
+    const [phone, charger] = receipt().lines;
+    const model = buildEInvoiceModel(
+      receipt({ lines: [{ ...phone!, emirate: "DU" }, { ...charger!, emirate: "AJ" }] }),
+    );
+    // Guessing a winner here would fabricate a VAT return line.
+    expect(model.supplyEmirate).toBeUndefined();
+    expect(model.lines.map((l) => l.emirate)).toEqual(["DU", "AJ"]);
+  });
+
+  it("adds no warning for a clean, fully attributed full invoice", () => {
+    const model = buildEInvoiceModel(receipt({ emirate: "AZ" }), {
+      buyer: { name: "Buyer", trn: "100999999900003" },
+    });
+    expect(model.supplyEmirate?.vatReturnBox).toBe("1a");
+    expect(validateModel(model)).toEqual({ errors: [], warnings: [] });
   });
 });

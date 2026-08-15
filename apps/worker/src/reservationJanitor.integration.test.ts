@@ -106,8 +106,11 @@ describe.skipIf(!run)("ReservationJanitor", () => {
     expect(movement.rows[0]).toMatchObject({ movement_type: "release" });
   });
 
-  it("is idempotent: a second run releases nothing", async () => {
+  it("is idempotent: a second run does not release this order again", async () => {
+    // Scoped to this test's own order on purpose: runOnce() sweeps every tenant,
+    // so a shared test database will hand it expired reservations belonging to
+    // other test files. Asserting an empty batch tests their cleanup, not ours.
     const released = await new ReservationJanitor(worker).runOnce();
-    expect(released).toHaveLength(0);
+    expect(released).not.toContain(orderId);
   });
 });

@@ -12,6 +12,7 @@ import {
   apiErrorCode,
   apiErrorMessage,
   isNetworkError,
+  toMinor,
   type ApiClient,
   type ProductSummary,
   type Receipt,
@@ -27,6 +28,7 @@ import { loyaltyApplicableMinor, planPayments } from "../lib/payments.js";
 import type { SaleQueue } from "../lib/saleQueue.js";
 import { isImeiToken } from "../lib/scan.js";
 import type { StoredLocation } from "../lib/session.js";
+import { formatRateBp, type VatRate } from "../lib/tenantConfig.js";
 import { CustomerPanel } from "./CustomerPanel.js";
 import { LangToggle, useLang } from "./LangProvider.js";
 import { ReceiptModal, type CompletedSale } from "./ReceiptModal.js";
@@ -37,6 +39,8 @@ interface Props {
   deviceId: string;
   location: StoredLocation;
   cashierEmail: string;
+  /** The tenant's VAT rate and whether it actually came from the tenant (R7.4). */
+  vatRate: VatRate;
   onSignOut: () => void;
 }
 
@@ -49,10 +53,18 @@ const SEARCH_DEBOUNCE_MS = 250;
  */
 type Notice = { key: MessageKey; params?: MessageParams } | { text: string };
 
-export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSignOut }: Props) {
+export function SaleScreen({
+  api,
+  queue,
+  deviceId,
+  location,
+  cashierEmail,
+  vatRate,
+  onSignOut,
+}: Props) {
   const { t, lang } = useLang();
   const [cart, dispatch] = useReducer(cartReducer, []);
-  const totals = cartTotals(cart);
+  const totals = cartTotals(cart, vatRate.rateBp);
   const currency = cart[0]?.currency ?? "AED";
 
   const [barcode, setBarcode] = useState("");
@@ -62,6 +74,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
   const [results, setResults] = useState<ProductSummary[]>([]);
   const [searching, setSearching] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const [rejectedCount, setRejectedCount] = useState(0);
   const [tendering, setTendering] = useState<TenderMethod | null>(null);
   const [saleError, setSaleError] = useState<Notice | null>(null);
   const [completed, setCompleted] = useState<CompletedSale | null>(null);
@@ -92,7 +105,14 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
     void refreshLoyalty();
   }, [refreshLoyalty]);
 
-  useEffect(() => queue.subscribe(setPendingCount), [queue]);
+  useEffect(
+    () =>
+      queue.subscribe((counts) => {
+        setPendingCount(counts.pending);
+        setRejectedCount(counts.rejected);
+      }),
+    [queue],
+  );
 
   // Debounced product search.
   useEffect(() => {
@@ -120,7 +140,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
         variantId: variant.id,
         sku: variant.sku,
         name: product.variants.length > 1 ? `${product.name} (${variant.sku})` : product.name,
-        unitPriceMinor: variant.priceMinor,
+        unitPriceMinor: toMinor(variant.priceMinor),
         currency: variant.currency,
       },
     });
@@ -159,7 +179,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
               variantId: unit.variantId,
               sku: unit.sku,
               name: unit.productName,
-              unitPriceMinor: unit.priceMinor,
+              unitPriceMinor: toMinor(unit.priceMinor),
               currency: unit.currency,
               stockUnitId: unit.id,
               imei: unit.imei1 ?? code,
@@ -209,7 +229,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
       setTendering(method);
       setSaleError(null);
       const linesSnapshot: CartLine[] = cart.map((l) => ({ ...l }));
-      const totalsSnapshot = cartTotals(linesSnapshot);
+      const totalsSnapshot = cartTotals(linesSnapshot, vatRate.rateBp);
       const loyaltyValueMinor =
         customer.loyaltyApplied && customer.loyalty !== null ? customer.loyalty.valueMinor : 0;
       const payments = planPayments(totalsSnapshot.totalMinor, loyaltyValueMinor, method);
@@ -236,6 +256,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
             lines: linesSnapshot,
             payments,
             currency: linesSnapshot[0]?.currency ?? "AED",
+            vatRateBp: vatRate.rateBp,
           });
           return;
         }
@@ -245,7 +266,14 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
         } catch {
           /* receipt endpoint unavailable — fall back to sale totals */
         }
-        setCompleted({ mode: "online", sale: outcome.result, receipt, lines: linesSnapshot, payments });
+        setCompleted({
+          mode: "online",
+          sale: outcome.result,
+          receipt,
+          lines: linesSnapshot,
+          payments,
+          vatRateBp: vatRate.rateBp,
+        });
       } catch (err) {
         if (err instanceof ApiError) {
           if (apiErrorCode(err) === "INSUFFICIENT_POINTS") {
@@ -271,7 +299,7 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
         setTendering(null);
       }
     },
-    [api, cart, customer, deviceId, location.id, queue, refreshLoyalty, tendering],
+    [api, cart, customer, deviceId, location.id, queue, refreshLoyalty, tendering, vatRate.rateBp],
   );
 
   const newSale = useCallback(() => {
@@ -305,6 +333,19 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
         {pendingCount > 0 && (
           <span className="badge badge-pending" title={t("topbar.pendingSyncTitle")}>
             {t("topbar.pendingSync", { count: pendingCount })}
+          </span>
+        )}
+        {/*
+          A refused sale is money already taken for goods already gone. It stays
+          on screen until someone settles it — critical, not informational.
+        */}
+        {rejectedCount > 0 && (
+          <span
+            className="badge badge-rejected"
+            role="alert"
+            title={t("topbar.rejectedSyncTitle")}
+          >
+            {t("topbar.rejectedSync", { count: rejectedCount })}
           </span>
         )}
         <LangToggle />
@@ -451,7 +492,9 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
               <dd className="mono">{formatMinor(totals.subtotalMinor, currency)}</dd>
             </div>
             <div>
-              <dt>{t("totals.vat")}</dt>
+              {/* The rate is the tenant's, and it is stated — a cashier can
+                  see at a glance which rate the till is charging. */}
+              <dt>{t("totals.vat", { rate: formatRateBp(vatRate.rateBp) })}</dt>
               <dd className="mono">{formatMinor(totals.taxMinor, currency)}</dd>
             </div>
             <div className="grand-total">
@@ -471,6 +514,18 @@ export function SaleScreen({ api, queue, deviceId, location, cashierEmail, onSig
               </>
             )}
           </dl>
+
+          {/*
+            The till never learned this tenant's rate and is charging the
+            statutory default. Money is being taken against an assumed tax
+            figure, so this is a standing alert, not a toast: it stays on the
+            screen for every sale until a sign-in syncs the real rate.
+          */}
+          {vatRate.source === "fallback" && (
+            <p className="warn-text" role="alert">
+              {t("totals.vatRateAssumed", { rate: formatRateBp(vatRate.rateBp) })}
+            </p>
+          )}
 
           {saleError && (
             <p className="error-text" role="alert">

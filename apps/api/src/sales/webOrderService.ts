@@ -3,11 +3,18 @@ import { LedgerError, lineTotals, saleTotals } from "@omniretail/domain";
 import type { Db } from "../db.js";
 import { PgInventoryService, translatePgError } from "../inventory/pgInventory.js";
 import { PricingService } from "../catalog/pricingService.js";
+import { NotificationService } from "../notify/notificationService.js";
+import { CodError, CodService } from "./codService.js";
 import { SaleError } from "./salesService.js";
 
 export interface WebOrderInput {
   customer: { name: string; email?: string; phone?: string };
   lines: { variantId: string; quantity: number }[];
+  /**
+   * How the shopper intends to pay. Defaults to `gateway` — the behaviour
+   * before the COD gate existed — so an older client keeps working.
+   */
+  paymentMethod?: "gateway" | "cod";
 }
 
 /**
@@ -21,6 +28,11 @@ export class WebOrderService {
     private readonly db: Db,
     private readonly inventory: PgInventoryService,
     private readonly pricing: PricingService,
+    /** Defaulted so existing construction sites need no change (same pattern
+     *  as ShippingService's inventory dependency). */
+    private readonly notifications: NotificationService = new NotificationService(db),
+    /** Same defaulting pattern: the COD gate (R5.5) is stateless over `db`. */
+    private readonly cod: CodService = new CodService(db),
   ) {}
 
   async resolveTenant(slug: string): Promise<{ id: string; name: string; currency: string; vatRateBp: number } | undefined> {
@@ -104,7 +116,16 @@ export class WebOrderService {
   async createOrder(
     tenant: { id: string; currency: string; vatRateBp: number },
     input: WebOrderInput,
-  ): Promise<{ orderId: string; orderNo: string; totals: Record<string, unknown>; status: string }> {
+  ): Promise<{
+    orderId: string;
+    orderNo: string;
+    totals: Record<string, unknown>;
+    status: string;
+    paymentMethod: string;
+    /** What must be paid before this order confirms (R5.5). */
+    amountDueNowMinor: number;
+    codAdvanceRequiredMinor?: number;
+  }> {
     try {
       return await this.db.withTenant(tenant.id, async (c) => {
         const system = await c.query<{ id: string }>(
@@ -193,28 +214,79 @@ export class WebOrderService {
         const orderNo = `INV-${String(counter.rows[0]!.last_no).padStart(6, "0")}`;
         const orderId = randomUUID();
 
+        // ---- the COD gate (R5.5) ----
+        //
+        // Run BEFORE the order row exists. The audit's finding was that the
+        // advance-payment configuration was "read and never enforced anywhere
+        // in checkout"; the fix is not to warn after the fact but to refuse to
+        // create the order at all when COD is not available, and to hold it
+        // unconfirmed until the advance is actually collected.
+        const codRequested = input.paymentMethod === "cod";
+        let advanceRequiredMinor = 0;
+        let riskScore: number | null = null;
+
+        if (codRequested) {
+          const decision = await this.cod.decideWith(c, {
+            orderTotalMinor: totals.totalMinor,
+            ...(customerId ? { customerId } : {}),
+          });
+          riskScore = decision.riskScore;
+          if (!decision.allowed) {
+            // Honest copy, and the alternatives, so the storefront can offer a
+            // next step rather than a dead end.
+            throw new CodError("COD_NOT_AVAILABLE", decision.message, {
+              reason: decision.reason,
+              alternatives: ["card", "tabby"],
+            });
+          }
+          advanceRequiredMinor = decision.advanceRequiredMinor;
+        }
+
+        // A COD order with nothing left to collect up front is settled as far
+        // as checkout is concerned and confirms immediately; one that owes an
+        // advance stays `pending` until the gateway captures it. A gateway
+        // order stays `pending` as it always has.
+        const status =
+          codRequested && advanceRequiredMinor === 0 ? "confirmed" : "pending";
+
         await c.query(
           `INSERT INTO sales_order
              (id, tenant_id, order_no, channel_id, location_id, customer_id, status,
-              currency, subtotal_minor, tax_minor, total_minor, placed_at, meta)
-           VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,$10, now(), $11)`,
+              currency, subtotal_minor, tax_minor, total_minor, placed_at, meta,
+              payment_method, cod_advance_required_minor, cod_risk_score)
+           VALUES ($1,$2,$3,$4,$5,$6,$12,$7,$8,$9,$10, now(), $11,$13,$14,$15)`,
           [orderId, tenant.id, orderNo, channel.rows[0].id, location.id, customerId,
            tenant.currency, totals.subtotalMinor, totals.taxMinor, totals.totalMinor,
-           JSON.stringify({ customerName: input.customer.name, paymentState: "pending_payment" })],
+           JSON.stringify({
+             customerName: input.customer.name,
+             paymentState: codRequested && advanceRequiredMinor === 0
+               ? "cod_pending_delivery"
+               : "pending_payment",
+           }),
+           status,
+           codRequested ? "cod" : "card",
+           advanceRequiredMinor,
+           riskScore],
         );
 
         for (let i = 0; i < input.lines.length; i++) {
           const line = input.lines[i]!;
           const variant = byId.get(line.variantId)!;
           await c.query(
+            // Storefront sales are always standard-rated: reverse charge
+            // requires a verified declaration captured face to face (R7.3a),
+            // which a guest checkout has no way to obtain. The category and
+            // rate are still written explicitly rather than left to the
+            // column default, so every line states its own tax basis (R7.2).
             `INSERT INTO sales_order_line
                (id, tenant_id, order_id, variant_id, description, quantity,
-                unit_price_minor, tax_minor, total_minor)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+                unit_price_minor, tax_minor, total_minor, tax_category, tax_rate_bp)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'S',$10)`,
             [randomUUID(), tenant.id, orderId, line.variantId,
              `${variant.name} (${variant.sku})`, line.quantity,
              priceMap.get(line.variantId)!.priceMinor,
-             computed[i]!.taxMinor, computed[i]!.grossMinor],
+             computed[i]!.taxMinor, computed[i]!.grossMinor,
+             tenant.vatRateBp],
           );
           await this.inventory.postMovementWith(c, tenant.id, {
             id: randomUUID(),
@@ -236,12 +308,23 @@ export class WebOrderService {
           );
         }
 
-        await c.query(
-          `INSERT INTO payment (id, tenant_id, order_id, method, gateway, amount_minor,
-                                currency, status)
-           VALUES ($1,$2,$3,'gateway',NULL,$4,$5,'pending')`,
-          [randomUUID(), tenant.id, orderId, totals.totalMinor, tenant.currency],
-        );
+        // The payment the shopper owes NOW. For a gateway order that is the
+        // whole total; for a COD order it is the advance, and only when the
+        // gate asked for one — the rest is collected at the door (R5.4).
+        //
+        // Both are `method = 'gateway'` so the existing capture path applies
+        // unchanged; `purpose` is what stops a report reading a deposit as
+        // settlement of the sale.
+        const dueNowMinor = codRequested ? advanceRequiredMinor : totals.totalMinor;
+        if (dueNowMinor > 0) {
+          await c.query(
+            `INSERT INTO payment (id, tenant_id, order_id, method, gateway, amount_minor,
+                                  currency, status, purpose)
+             VALUES ($1,$2,$3,'gateway',NULL,$4,$5,'pending',$6)`,
+            [randomUUID(), tenant.id, orderId, dueNowMinor, tenant.currency,
+             codRequested ? "cod_advance" : "sale"],
+          );
+        }
 
         await c.query(
           `INSERT INTO outbox (id, tenant_id, aggregate, event_type, payload)
@@ -250,11 +333,61 @@ export class WebOrderService {
            JSON.stringify({ orderId, orderNo, channel: "web", totalMinor: totals.totalMinor })],
         );
 
+        // R13: the order confirmation is queued in THIS transaction. An order
+        // that commits always has its confirmation queued; one that rolls back
+        // never leaves a message promising a purchase that did not happen.
+        //
+        // Only when we have somewhere to send it. A phone-only order is a
+        // legitimate order — throwing NO_RECIPIENT here would roll back the
+        // sale because we could not send an email, which is the tail wagging
+        // the dog.
+        if (input.customer.email) {
+          const { rows: tenantRows } = await c.query<{ name: string }>(
+            "SELECT name FROM tenant WHERE id = $1",
+            [tenant.id],
+          );
+          await this.notifications.enqueueWith(c, tenant.id, {
+            request: {
+              template: "order_confirmation",
+              payload: {
+                tenantName: tenantRows[0]?.name ?? "",
+                customerName: input.customer.name,
+                orderNo,
+                currency: tenant.currency,
+                lines: input.lines.map((line, i) => {
+                  const variant = byId.get(line.variantId)!;
+                  return {
+                    description: `${variant.name} (${variant.sku})`,
+                    quantity: line.quantity,
+                    totalMinor: computed[i]!.grossMinor,
+                  };
+                }),
+                subtotalMinor: totals.subtotalMinor,
+                taxMinor: totals.taxMinor,
+                totalMinor: totals.totalMinor,
+                vatRateBp: tenant.vatRateBp,
+              },
+            },
+            dedupeKey: `order_confirmation:${orderId}`,
+            recipient: input.customer.email,
+            customerId,
+            orderId,
+          });
+        }
+
         return {
           orderId,
           orderNo,
           totals: { ...totals, currency: tenant.currency },
-          status: "pending_payment",
+          status:
+            codRequested && advanceRequiredMinor === 0
+              ? "cod_pending_delivery"
+              : "pending_payment",
+          paymentMethod: codRequested ? "cod" : "card",
+          // What the shopper must pay before this order confirms. Zero on a
+          // COD order under the threshold; the full total on a gateway order.
+          amountDueNowMinor: codRequested ? advanceRequiredMinor : totals.totalMinor,
+          ...(codRequested ? { codAdvanceRequiredMinor: advanceRequiredMinor } : {}),
         };
       });
     } catch (err) {

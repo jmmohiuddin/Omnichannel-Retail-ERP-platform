@@ -43,6 +43,9 @@ describe.skipIf(!run)("POS sales", () => {
 
     locationId = (await post("/v1/locations", { kind: "store", name: "Shop", code: "S1" })).json().id;
     deviceId = (await post("/v1/devices", { kind: "pos_register", name: "Register 1", locationId })).json().id;
+    // A register must have an open till before it can take cash (R3.10):
+    // cash outside a session escapes the blind-close reconciliation.
+    await post("/v1/cash-sessions", { deviceId: deviceId, openingFloatMinor: 0 });
 
     const mkVariant = async (name: string, slug: string, sku: string, priceMinor: number, qty: number) => {
       const productId = (await post("/v1/products", { name, slug, tracking: "none" })).json().id;
@@ -98,7 +101,11 @@ describe.skipIf(!run)("POS sales", () => {
     });
     expect(receipt.statusCode).toBe(200);
     const r = receipt.json();
-    expect(r.kind).toBe("tax_invoice");
+    // `kind` now names WHICH tax document this is. R7.2 makes the two legally
+    // distinct — a simplified invoice may omit the buyer's details, a full one
+    // may not — so a single "tax_invoice" could not say which rules applied.
+    // A consumer cash sale is the simplified case.
+    expect(r.kind).toBe("simplified_tax_invoice");
     expect(r.lines).toHaveLength(2);
     expect(r.payments[0]).toMatchObject({ method: "cash", amountMinor: 437700 });
   });

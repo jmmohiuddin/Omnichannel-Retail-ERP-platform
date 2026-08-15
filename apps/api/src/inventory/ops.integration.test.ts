@@ -121,6 +121,36 @@ describe.skipIf(!run)("operations", () => {
     expect(store.inTransit).toBe(0);
   });
 
+  it("refuses a cash sale on a register with no open till", async () => {
+    // Regression: `cashSessionId` fell back to null and the sale succeeded, so
+    // the cash never entered the blind-close expectation and the variance was
+    // wrong by exactly that amount, with nothing to trace it to (R3.10).
+    const noTill = (
+      await post(ownerToken, "/v1/devices", { kind: "pos_register", name: "Unopened", locationId: storeId })
+    ).json().id;
+
+    const res = await post(ownerToken, "/v1/pos/sales", {
+      id: randomUUID(), deviceId: noTill, locationId: storeId,
+      lines: [{ variantId, quantity: 1, unitPriceMinor: 2100 }],
+      payments: [{ method: "cash", amountMinor: 2100 }],
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("NO_OPEN_CASH_SESSION");
+  });
+
+  it("allows a non-cash sale with no open till — no drawer is involved", async () => {
+    const noTill = (
+      await post(ownerToken, "/v1/devices", { kind: "pos_register", name: "CardOnly", locationId: storeId })
+    ).json().id;
+
+    const res = await post(ownerToken, "/v1/pos/sales", {
+      id: randomUUID(), deviceId: noTill, locationId: storeId,
+      lines: [{ variantId, quantity: 1, unitPriceMinor: 2100 }],
+      payments: [{ method: "card", amountMinor: 2100 }],
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
   it("cash session: blind close computes variance from the payment ledger", async () => {
     const session = await post(ownerToken, "/v1/cash-sessions", {
       deviceId, openingFloatMinor: 50000,

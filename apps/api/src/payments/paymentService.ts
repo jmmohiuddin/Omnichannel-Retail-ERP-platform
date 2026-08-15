@@ -42,6 +42,12 @@ export class PaymentService {
     tenantId: string,
     orderId: string,
     gatewayKey: string,
+    /**
+     * R5.5: a COD order charges only its advance up front, not the whole
+     * total. Defaulting to the order total keeps every existing caller — and
+     * every gateway order — behaving exactly as before.
+     */
+    options: { amountMinor?: number } = {},
   ): Promise<{ intentId: string; gatewayRef: string; redirectUrl?: string }> {
     const gateway = this.gateway(gatewayKey);
     return this.db.withTenant(tenantId, async (c) => {
@@ -57,10 +63,20 @@ export class PaymentService {
         throw new PaymentError("BAD_STATE", `order is ${head.status}`);
       }
 
+      // What this intent charges. A COD order collects only its advance now
+      // (R5.5); everything else charges the order in full, as before.
+      const chargeMinor = options.amountMinor ?? Number(head.total_minor);
+      if (chargeMinor <= 0 || chargeMinor > Number(head.total_minor)) {
+        throw new PaymentError(
+          "BAD_STATE",
+          `cannot charge ${chargeMinor} against an order totalling ${head.total_minor}`,
+        );
+      }
+
       const intent = await gateway.createIntent({
         orderId,
         orderNo: head.order_no,
-        amountMinor: Number(head.total_minor),
+        amountMinor: chargeMinor,
         currency: head.currency,
       });
       const intentId = randomUUID();
@@ -71,7 +87,7 @@ export class PaymentService {
               status, redirect_url)
            VALUES ($1,$2,$3,$4,$5,$6,$7,'created',$8)`,
           [intentId, tenantId, orderId, gateway.key, intent.gatewayRef,
-           Number(head.total_minor), head.currency, intent.redirectUrl ?? null],
+           chargeMinor, head.currency, intent.redirectUrl ?? null],
         );
       } catch (err) {
         if ((err as { code?: string }).code === "23505") {
@@ -96,19 +112,10 @@ export class PaymentService {
     event: GatewayWebhookEvent,
     rawBody: string,
   ): Promise<{ duplicate?: boolean; orderId?: string; result?: string }> {
-    // Dedupe first — platform scope (webhook_delivery carries no tenant).
-    const inserted = await this.db.withPlatform((c) =>
-      c.query(
-        `INSERT INTO webhook_delivery (gateway, external_id, payload)
-         VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-        [gatewayKey, event.externalId, rawBody],
-      ),
-    );
-    if (inserted.rowCount === 0) return { duplicate: true };
-
-    // Find the intent. The webhook names no tenant, so this SELECT opts into
-    // the transaction-local webhook_lookup policy (016) — the intent row is
-    // what resolves gateway_ref → tenant.
+    // Resolve the intent FIRST. The webhook names no tenant, so this SELECT
+    // opts into the transaction-local webhook_lookup policy (016) — the intent
+    // row is what resolves gateway_ref → tenant. Read-only, so it is safe to
+    // repeat on a retry.
     const found = await this.db.withPlatform(async (c) => {
       await c.query("SELECT set_config('app.webhook_lookup', 'on', true)");
       return c.query<{ id: string; tenant_id: string; order_id: string; status: string }>(
@@ -118,10 +125,46 @@ export class PaymentService {
       );
     });
     const intent = found.rows[0];
-    if (!intent) return { result: "intent_not_found" }; // acknowledged; investigated via ops
+    if (!intent) {
+      // Deliberately NOT recorded as delivered. A webhook can outrun the
+      // transaction that creates its intent; marking it done here would make
+      // the gateway's retry a no-op and strand the payment forever. Retrying
+      // an unknown event is cheap; losing a captured one is not.
+      return { result: "intent_not_found" };
+    }
 
+    // Dedupe and effect in ONE transaction. Previously the dedupe row was
+    // committed in its own transaction before the effect ran in another, so a
+    // failure in between left the delivery marked processed and the payment
+    // never applied — the gateway's retry then returned `duplicate: true` and
+    // the money was silently lost. Rolling back now discards both together.
     return this.db.withTenant(intent.tenant_id, async (c) => {
-      if (intent.status === "succeeded" || intent.status === "failed") {
+      // Take the intent's row lock BEFORE the dedupe insert, and re-read the
+      // status from inside this transaction. The status above was read in a
+      // different (already committed) transaction, so it is only a hint.
+      //
+      // That was harmless while webhooks were the sole caller — the dedupe key
+      // serialized retries of one delivery. The reconciler (R6.2) makes it
+      // reachable: it applies the same effect under a DIFFERENT idempotency key,
+      // so a reconciler run racing the webhook it was compensating for would see
+      // two callers both read 'created', both pass the dedupe insert, and both
+      // run the effect. The UPDATEs below are guarded by their own status
+      // predicates, but the outbox INSERT is not — the order would be published
+      // as paid twice. The lock makes the loser observe 'succeeded' and stop.
+      const locked = await c.query<{ status: string }>(
+        "SELECT status FROM payment_intent WHERE id = $1 FOR UPDATE",
+        [intent.id],
+      );
+      const status = locked.rows[0]?.status ?? intent.status;
+
+      const inserted = await c.query(
+        `INSERT INTO webhook_delivery (gateway, external_id, payload)
+         VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+        [gatewayKey, event.externalId, rawBody],
+      );
+      if (inserted.rowCount === 0) return { duplicate: true };
+
+      if (status === "succeeded" || status === "failed") {
         return { orderId: intent.order_id, result: "already_final" };
       }
       if (event.type === "payment.failed") {
@@ -140,6 +183,21 @@ export class PaymentService {
         `UPDATE payment SET status = 'captured', gateway = $2, gateway_ref = $3
           WHERE order_id = $1 AND method = 'gateway' AND status = 'pending'`,
         [intent.order_id, gatewayKey, event.gatewayRef],
+      );
+      // R5.5: credit a COD advance BEFORE the status moves. The constraint
+      // `sales_order_cod_advance_collected` (migration 035) rejects a
+      // confirmed COD order whose advance is still unpaid, so confirming
+      // first would fail on the constraint rather than pass through the gate.
+      // Summed from captured rows rather than incremented, so a replay or a
+      // reconciler run that lands twice cannot inflate the figure.
+      await c.query(
+        `UPDATE sales_order o
+            SET cod_advance_paid_minor = (
+                  SELECT coalesce(sum(p.amount_minor), 0) FROM payment p
+                   WHERE p.order_id = o.id AND p.purpose = 'cod_advance'
+                     AND p.status = 'captured')
+          WHERE o.id = $1 AND o.payment_method = 'cod'`,
+        [intent.order_id],
       );
       await c.query(
         "UPDATE sales_order SET status = 'confirmed' WHERE id = $1 AND status = 'pending'",

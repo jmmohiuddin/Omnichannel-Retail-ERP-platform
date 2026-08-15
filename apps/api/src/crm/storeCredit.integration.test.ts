@@ -50,6 +50,9 @@ describe.skipIf(!run)("store credit", () => {
     // A completed sale to hang redemption off — plain quantity, cash-paid.
     const locationId = (await post("/v1/locations", { kind: "store", name: "S", code: "S1" })).json().id;
     const deviceId = (await post("/v1/devices", { kind: "pos_register", name: "R", locationId })).json().id;
+    // A register must have an open till before it can take cash (R3.10):
+    // cash outside a session escapes the blind-close reconciliation.
+    await post("/v1/cash-sessions", { deviceId: deviceId, openingFloatMinor: 0 });
     const productId = (await post("/v1/products", { name: "Cable", slug: "cbl", tracking: "none" })).json().id;
     const variantId = (await post(`/v1/products/${productId}/variants`,
       { sku: "CBL-1", priceMinor: 5000, currency: "AED" })).json().id;

@@ -13,13 +13,21 @@ export function saleLineMovementId(saleId: string, lineIndex: number): string {
   const hex = bytes.toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
-import { lineTotals, saleTotals, type LineTotals } from "@omniretail/domain";
+import {
+  lineTotalsForCategory,
+  saleTotals,
+  REVERSE_CHARGE_STATEMENT,
+  type LineTotals,
+  type RcmDeviceClass,
+  type SaleTaxTreatmentKind,
+} from "@omniretail/domain";
 import type { Db } from "../db.js";
 import { PgInventoryService, translatePgError } from "../inventory/pgInventory.js";
 import { LoyaltyService } from "../crm/loyaltyService.js";
 import { PricingService } from "../catalog/pricingService.js";
 import { GiftCardService } from "../crm/giftCardService.js";
 import { StoreCreditService } from "../crm/storeCreditService.js";
+import { RcmService } from "../tax/rcmService.js";
 
 export class SaleError extends Error {
   constructor(
@@ -32,6 +40,8 @@ export class SaleError extends Error {
       | "SERIALIZED_REQUIRED"
       | "UNIT_UNAVAILABLE"
       | "PRICE_MISMATCH"
+      /** Cash tendered on a register with no open till (R3.10). */
+      | "NO_OPEN_CASH_SESSION"
       | "DISCOUNT_APPROVAL_REQUIRED",
     message: string,
   ) {
@@ -50,6 +60,14 @@ export interface SaleLineInput {
   /** Approved 'discount' approval — required when the discount exceeds the
    *  cashier band (FP-004 exceptional-discount control). */
   discountApprovalId?: string;
+  /**
+   * Zero-rated supply, e.g. an export under Art. 45. R7.3a: a zero-rated line
+   * is expressly outside the reverse charge and stays zero-rated even on a
+   * qualifying B2B sale.
+   */
+  zeroRated?: boolean;
+  /** Exempt supply. Like zeroRated, never reverse-charged. */
+  exempt?: boolean;
 }
 
 export interface PosSaleInput {
@@ -69,6 +87,13 @@ export interface PosSaleInput {
   }[];
   offlineCreated?: boolean;
   occurredAt?: Date;
+  /**
+   * The cashier marked this sale business-to-business with intent to resell
+   * (R7.3). Requesting it is not the same as getting it: the four conditions
+   * of CD 91/2023 are checked server-side and an unqualified sale falls back
+   * to standard-rated VAT with a reason.
+   */
+  businessSale?: boolean;
 }
 
 export interface PosSaleResult {
@@ -81,6 +106,13 @@ export interface PosSaleResult {
     totalMinor: number;
     currency: string;
   };
+  /** 'standard' | 'reverse_charge' | 'mixed' — what the invoice must say. */
+  taxTreatment: SaleTaxTreatmentKind;
+  /**
+   * Present when the cashier asked for reverse charge and did not get it.
+   * One sentence, to be shown at the till (R7.3 acceptance criteria).
+   */
+  rcmRefusedMessage?: string;
 }
 
 /**
@@ -97,6 +129,7 @@ export class SalesService {
     private readonly pricing: PricingService,
     private readonly giftCards: GiftCardService,
     private readonly storeCredit: StoreCreditService,
+    private readonly rcm: RcmService,
   ) {}
 
   async createPosSale(
@@ -125,9 +158,12 @@ export class SalesService {
         const variantIds = input.lines.map((l) => l.variantId);
         const { rows: variants } = await c.query<{
           id: string; sku: string; price_minor: string; name: string; tracking: string;
-          warranty_months: number | null;
+          warranty_months: number | null; device_class: RcmDeviceClass | null;
         }>(
-          `SELECT v.id, v.sku, v.price_minor, p.name, p.tracking, v.warranty_months
+          // device_class drives per-line reverse-charge eligibility (R7.3):
+          // a handset qualifies, the case sold beside it does not.
+          `SELECT v.id, v.sku, v.price_minor, p.name, p.tracking, v.warranty_months,
+                  p.device_class
              FROM variant v JOIN product p ON p.id = v.product_id
             WHERE v.id = ANY($1)`,
           [variantIds],
@@ -223,8 +259,38 @@ export class SalesService {
           );
         }
 
-        const computed: LineTotals[] = input.lines.map((l) =>
-          lineTotals(l.unitPriceMinor, l.quantity, vatRateBp, l.discountMinor ?? 0),
+        // ---- Tax treatment (R7.3 / R7.3a) ----
+        // Resolved on THIS client, inside the sale transaction, so the
+        // declaration cannot be revoked between deciding the treatment and
+        // writing the invoice that depends on it.
+        const resolvedTax = await this.rcm.resolveForSaleWith(c, {
+          customerId: input.customerId,
+          rcmRequested: input.businessSale ?? false,
+          standardRateBp: vatRateBp,
+          lines: input.lines.map((l, i) => ({
+            lineId: String(i),
+            variantId: l.variantId,
+            deviceClass: byId.get(l.variantId)!.device_class ?? undefined,
+            ...(l.zeroRated ? { zeroRated: true } : {}),
+            ...(l.exempt ? { exempt: true } : {}),
+          })),
+        });
+        const lineTax = resolvedTax.treatment.lines;
+
+        // Money follows the category, not the other way round. A reverse-
+        // charged line is invoiced VAT-EXCLUSIVE — the shelf price is
+        // inclusive, so the 5% is stripped and the buyer accounts for it.
+        // That makes an RCM basket cheaper than the same basket sold to a
+        // consumer, which is correct and is why the payment total below is
+        // checked against the recomputed figure rather than the till's.
+        const computed: LineTotals[] = input.lines.map((l, i) =>
+          lineTotalsForCategory(
+            l.unitPriceMinor,
+            l.quantity,
+            vatRateBp,
+            lineTax[i]!.category,
+            l.discountMinor ?? 0,
+          ),
         );
         const totals = saleTotals(computed);
         const paid = input.payments.reduce((s, p) => s + p.amountMinor, 0);
@@ -255,8 +321,11 @@ export class SalesService {
           `INSERT INTO sales_order
              (id, tenant_id, order_no, channel_id, location_id, cashier_user_id, device_id,
               customer_id, status, currency, subtotal_minor, discount_minor, tax_minor,
-              total_minor, placed_at, completed_at, offline_created, meta)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'completed',$9,$10,$11,$12,$13,$14,$14,$15,$16)`,
+              total_minor, placed_at, completed_at, offline_created, meta,
+              tax_treatment, buyer_trn, buyer_legal_name, rcm_declaration_id,
+              rcm_refused_reason)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'completed',$9,$10,$11,$12,$13,$14,$14,$15,$16,
+                   $17,$18,$19,$20,$21)`,
           [
             input.id, tenantId, orderNo, channel.rows[0].id, input.locationId,
             actorUserId, input.deviceId, input.customerId ?? null, currency,
@@ -265,6 +334,14 @@ export class SalesService {
             totals.taxMinor, totals.totalMinor, occurredAt,
             input.offlineCreated ?? false,
             JSON.stringify(input.customerName ? { customerName: input.customerName } : {}),
+            resolvedTax.treatment.kind,
+            resolvedTax.buyerTrn ?? null,
+            resolvedTax.buyerLegalName ?? null,
+            resolvedTax.declarationId ?? null,
+            // Kept even though the sale proceeded standard-rated: a shop
+            // repeatedly failing verification is a process problem, and it is
+            // only visible if the refusals are queryable.
+            resolvedTax.treatment.refusedReason ?? null,
           ],
         );
 
@@ -276,13 +353,17 @@ export class SalesService {
             `INSERT INTO sales_order_line
                (id, tenant_id, order_id, variant_id, stock_unit_id, description,
                 quantity, unit_price_minor, discount_minor, discount_approval_id,
-                tax_minor, total_minor)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+                tax_minor, total_minor, tax_category, tax_rate_bp)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
             [
               randomUUID(), tenantId, input.id, line.variantId, line.stockUnitId ?? null,
               `${variant.name} (${variant.sku})`, line.quantity, line.unitPriceMinor,
               line.discountMinor ?? 0, line.discountApprovalId ?? null,
               lt.taxMinor, lt.grossMinor,
+              // Per-line category and rate: R7.2 requires both on a full tax
+              // invoice, and a mixed basket makes them un-derivable from the
+              // order header.
+              lineTax[i]!.category, lineTax[i]!.rateBp,
             ],
           );
 
@@ -349,6 +430,17 @@ export class SalesService {
           [input.deviceId],
         );
         const cashSessionId = session.rows[0]?.id ?? null;
+        // Cash outside an open till is cash outside reconciliation: the blind
+        // close computes expected drawer contents from this ledger, so a sale
+        // with no session silently shifts the variance by its own amount and
+        // the cashier is blamed for a gap nobody can trace. Refuse it instead
+        // (R3.10) — opening a till is the first thing a shift does.
+        if (cashSessionId === null && input.payments.some((p) => p.method === "cash")) {
+          throw new SaleError(
+            "NO_OPEN_CASH_SESSION",
+            "no open cash session on this register — open the till before taking cash",
+          );
+        }
         for (const payment of input.payments) {
           await c.query(
             `INSERT INTO payment (id, tenant_id, order_id, method, amount_minor, currency,
@@ -376,7 +468,17 @@ export class SalesService {
                             totalMinor: totals.totalMinor, currency })],
         );
 
-        return { orderId: input.id, orderNo, totals: { ...totals, currency } };
+        return {
+          orderId: input.id,
+          orderNo,
+          totals: { ...totals, currency },
+          taxTreatment: resolvedTax.treatment.kind,
+          // The till shows this to the cashier when reverse charge was asked
+          // for and refused — one sentence, per the R7.3 acceptance criteria.
+          ...(resolvedTax.treatment.refusedMessage
+            ? { rcmRefusedMessage: resolvedTax.treatment.refusedMessage }
+            : {}),
+        };
       });
     } catch (err) {
       const translated = translatePgError(err);
@@ -400,7 +502,8 @@ export class SalesService {
       const order = await c.query(
         `SELECT o.id, o.order_no, o.currency, o.subtotal_minor, o.discount_minor,
                 o.tax_minor, o.total_minor, o.placed_at, o.meta,
-                t.name AS tenant_name, t.trn, t.vat_rate_bp,
+                o.tax_treatment, o.buyer_trn, o.buyer_legal_name, o.buyer_address,
+                t.name AS tenant_name, t.trn, t.vat_rate_bp, t.address AS tenant_address,
                 l.name AS location_name, l.code AS location_code,
                 u.full_name AS cashier_name
            FROM sales_order o
@@ -412,20 +515,67 @@ export class SalesService {
       );
       const head = order.rows[0];
       if (!head) return undefined;
+      // The IMEI is joined, not omitted: it is the customer's warranty proof and
+      // the shop's defence in a dispute, and R2.8 requires it on the receipt and
+      // the tax invoice. The line already carries `stock_unit_id`; nothing was
+      // reading it, so a serialised sale printed paper that could not identify
+      // the handset it was for.
       const { rows: lines } = await c.query(
-        `SELECT description, quantity, unit_price_minor, discount_minor, tax_minor, total_minor
-           FROM sales_order_line WHERE order_id = $1 ORDER BY description`,
+        `SELECT l.description, l.quantity, l.unit_price_minor, l.discount_minor,
+                l.tax_minor, l.total_minor, l.tax_category, l.tax_rate_bp,
+                su.imei1, su.imei2, su.serial_no AS serial_no,
+                su.warranty_until
+           FROM sales_order_line l
+           LEFT JOIN stock_unit su ON su.id = l.stock_unit_id
+          WHERE l.order_id = $1 ORDER BY l.description`,
         [orderId],
       );
       const { rows: payments } = await c.query(
         "SELECT method, amount_minor FROM payment WHERE order_id = $1",
         [orderId],
       );
+      const taxTreatment = (head.tax_treatment ?? "standard") as SaleTaxTreatmentKind;
+
+      // R7.2: a FULL tax invoice is required when the buyer is VAT-registered
+      // and the consideration exceeds AED 10,000, or on request. A reverse-
+      // charged sale is always a full invoice — it is by definition a supply
+      // to a registrant and must carry the reverse-charge statement, which a
+      // simplified invoice has nowhere to put.
+      const FULL_INVOICE_THRESHOLD_MINOR = 1_000_000; // AED 10,000 in fils
+      const isFullInvoice =
+        Boolean(head.buyer_trn) &&
+        (taxTreatment !== "standard" ||
+          Number(head.total_minor) > FULL_INVOICE_THRESHOLD_MINOR);
+
       return {
-        kind: "tax_invoice", // FTA: simplified tax invoice fields (docs/08 §2)
+        kind: isFullInvoice ? "full_tax_invoice" : "simplified_tax_invoice",
         orderNo: head.order_no,
         issuedAt: head.placed_at,
-        seller: { name: head.tenant_name, trn: head.trn ?? null },
+        // R7.1 requires supplier name, address AND TRN on every tax invoice,
+        // simplified included. The address had no column until migration 033,
+        // so every receipt printed before it was missing a mandatory field.
+        seller: {
+          name: head.tenant_name,
+          trn: head.trn ?? null,
+          address: head.tenant_address ?? null,
+        },
+        // R7.2's additional full-invoice fields. Omitted entirely on a
+        // simplified invoice rather than emitted as nulls, so a renderer
+        // cannot accidentally print an empty "Buyer TRN:" line.
+        ...(isFullInvoice
+          ? {
+              buyer: {
+                legalName: head.buyer_legal_name,
+                trn: head.buyer_trn,
+                address: head.buyer_address ?? null,
+              },
+            }
+          : {}),
+        taxTreatment,
+        // R7.2/R7.3: the statement, bilingual, citing the Cabinet Decision.
+        ...(taxTreatment !== "standard"
+          ? { reverseChargeStatement: REVERSE_CHARGE_STATEMENT }
+          : {}),
         location: { name: head.location_name, code: head.location_code },
         cashier: head.cashier_name,
         currency: head.currency,
@@ -437,6 +587,16 @@ export class SalesService {
           discountMinor: Number(l.discount_minor),
           taxMinor: Number(l.tax_minor),
           totalMinor: Number(l.total_minor),
+          // R7.2 requires the VAT rate and amount per line; a mixed basket
+          // makes them un-derivable from the header.
+          taxCategory: l.tax_category,
+          taxRateBp: Number(l.tax_rate_bp),
+          // Present only on serialised lines; omitted rather than null so the
+          // renderer can treat absence as "not a serialised item".
+          ...(l.imei1 ? { imei: l.imei1 as string } : {}),
+          ...(l.imei2 ? { imei2: l.imei2 as string } : {}),
+          ...(l.serial_no ? { serialNo: l.serial_no as string } : {}),
+          ...(l.warranty_until ? { warrantyUntil: l.warranty_until as Date } : {}),
         })),
         totals: {
           subtotalMinor: Number(head.subtotal_minor),

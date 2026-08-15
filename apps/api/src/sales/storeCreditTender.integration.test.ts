@@ -54,6 +54,9 @@ describe.skipIf(!run)("store credit tender", () => {
       { kind: "store", name: "S", code: "S1" })).json().id;
     deviceId = (await post(ownerToken, "/v1/devices",
       { kind: "pos_register", name: "R1", locationId })).json().id;
+    // A register must have an open till before it can take cash (R3.10):
+    // cash outside a session escapes the blind-close reconciliation.
+    await post(ownerToken, "/v1/cash-sessions", { deviceId: deviceId, openingFloatMinor: 0 });
     const productId = (await post(ownerToken, "/v1/products",
       { name: "Lamp", slug: "lamp", tracking: "none" })).json().id;
     variantId = (await post(ownerToken, `/v1/products/${productId}/variants`,

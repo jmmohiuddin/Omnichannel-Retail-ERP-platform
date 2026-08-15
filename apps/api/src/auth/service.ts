@@ -41,6 +41,17 @@ export interface TokenPair {
   refreshToken: string;
   userId: string;
   tenantId: string;
+  /**
+   * The tenant's VAT rate in basis points (500 = 5%), from `tenant.vat_rate_bp`.
+   *
+   * Carried on every token issue — login, register and refresh — because the
+   * POS must show and print the SAME rate the server charges (R7.4), and it
+   * has to keep doing so through an eight-hour offline shift. Issuing it with
+   * the tokens is the one moment the till is guaranteed to be online, and a
+   * refresh re-syncs it, so a rate change by FTA decree reaches every register
+   * within a token lifetime without a deploy.
+   */
+  vatRateBp: number;
 }
 
 /**
@@ -60,12 +71,17 @@ export class AuthService {
   async registerTenant(input: RegisterInput): Promise<TokenPair> {
     const tenantId = randomUUID();
     const userId = randomUUID();
+    let vatRateBp: number;
     try {
-      await this.db.withPlatform(async (c) => {
-        await c.query(
-          "INSERT INTO tenant (id, name, slug, base_currency) VALUES ($1,$2,$3,$4)",
+      vatRateBp = await this.db.withPlatform(async (c) => {
+        // RETURNING rather than a constant: the column's default is the current
+        // UAE rate today, but the rate is table-driven and must never be
+        // restated in code.
+        const { rows } = await c.query<{ vat_rate_bp: number }>(
+          "INSERT INTO tenant (id, name, slug, base_currency) VALUES ($1,$2,$3,$4) RETURNING vat_rate_bp",
           [tenantId, input.tenantName, input.slug, input.currency ?? "AED"],
         );
+        return rows[0]!.vat_rate_bp;
       });
     } catch (err) {
       if ((err as { code?: string }).code === "23505") throw new AuthError("SLUG_TAKEN");
@@ -108,7 +124,7 @@ export class AuthService {
         [randomUUID(), tenantId],
       );
     });
-    return this.issue(tenantId, userId, ["owner"]);
+    return this.issue(tenantId, userId, ["owner"], vatRateBp);
   }
 
   /** Step 1 of MFA enrollment: mint a secret, return it for the authenticator app. */
@@ -159,8 +175,8 @@ export class AuthService {
 
   async login(slug: string, email: string, password: string, mfaCode?: string): Promise<TokenPair> {
     const tenant = await this.db.withPlatform(async (c) => {
-      const { rows } = await c.query<{ id: string }>(
-        "SELECT id FROM tenant WHERE slug = $1 AND status = 'active'",
+      const { rows } = await c.query<{ id: string; vat_rate_bp: number }>(
+        "SELECT id, vat_rate_bp FROM tenant WHERE slug = $1 AND status = 'active'",
         [slug],
       );
       return rows[0];
@@ -193,7 +209,7 @@ export class AuthService {
         throw new AuthError("INVALID_MFA");
       }
     }
-    return this.issue(tenant.id, user.id, user.roles);
+    return this.issue(tenant.id, user.id, user.roles, tenant.vat_rate_bp);
   }
 
   /** Create an employee user with one system role (owner/admin action). */
@@ -257,16 +273,33 @@ export class AuthService {
          VALUES ($1,$2,$3, now() + interval '${REFRESH_TTL_DAYS} days', $4)`,
         [tenantId, session.user_id, next.hash, session.id],
       );
+      // Re-read on every rotation: this is how a rate change reaches a register
+      // that has not signed out since the decree took effect.
+      const { rows: tenantRows } = await c.query<{ vat_rate_bp: number }>(
+        "SELECT vat_rate_bp FROM tenant WHERE id = $1",
+        [tenantId],
+      );
       const accessToken = await this.tokens.signAccess({
         userId: session.user_id,
         tenantId,
         roles: roleRows.map((r) => r.name),
       });
-      return { accessToken, refreshToken: next.token, userId: session.user_id, tenantId };
+      return {
+        accessToken,
+        refreshToken: next.token,
+        userId: session.user_id,
+        tenantId,
+        vatRateBp: tenantRows[0]!.vat_rate_bp,
+      };
     });
   }
 
-  private async issue(tenantId: string, userId: string, roles: string[]): Promise<TokenPair> {
+  private async issue(
+    tenantId: string,
+    userId: string,
+    roles: string[],
+    vatRateBp: number,
+  ): Promise<TokenPair> {
     const refresh = newRefreshToken();
     await this.db.withTenant(tenantId, async (c) => {
       await c.query(
@@ -276,6 +309,6 @@ export class AuthService {
       );
     });
     const accessToken = await this.tokens.signAccess({ userId, tenantId, roles });
-    return { accessToken, refreshToken: refresh.token, userId, tenantId };
+    return { accessToken, refreshToken: refresh.token, userId, tenantId, vatRateBp };
   }
 }

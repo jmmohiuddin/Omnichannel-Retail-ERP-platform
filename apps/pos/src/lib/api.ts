@@ -34,6 +34,13 @@ export interface LoginResponse {
   refreshToken: string;
   userId: string;
   tenantId: string;
+  /**
+   * The tenant's VAT rate in basis points (500 = 5%) — `tenant.vat_rate_bp`.
+   * Optional on the wire because an API older than this build does not send
+   * it; the till then trades on the flagged statutory fallback rather than
+   * refusing to open (see lib/tenantConfig.ts).
+   */
+  vatRateBp?: number;
 }
 
 export interface LocationSummary {
@@ -72,6 +79,24 @@ export interface StockUnit {
   priceMinor: number;
   currency: string;
   productName: string;
+}
+
+/**
+ * Money as an integer, whatever the wire produced.
+ *
+ * Postgres serialises BIGINT as a string to protect precision, and a service
+ * that forgets to coerce sends `"419900"`. That reached `formatMinor`, which
+ * correctly refuses a non-integer, and the exception unmounted the whole sale
+ * screen — a blank till mid-transaction. The server is fixed, but a bad price
+ * must never again be able to take the register down, so the value is
+ * normalised here as well.
+ */
+export function toMinor(value: unknown): number {
+  const n = typeof value === "string" ? Number(value) : value;
+  if (typeof n !== "number" || !Number.isFinite(n) || !Number.isInteger(n)) {
+    throw new TypeError(`expected integer minor units, got ${JSON.stringify(value)}`);
+  }
+  return n;
 }
 
 export interface CustomerSummary {
@@ -125,28 +150,51 @@ export interface SaleResult {
   };
 }
 
+/**
+ * One line of the server receipt. Mirrors `SalesService.receipt()` exactly —
+ * the field is `description`, not `name`/`sku`. Getting this wrong is not a
+ * cosmetic bug: a tax invoice must carry a description of the goods, and the
+ * previous mismatched type made every line render as the word "Item".
+ */
 export interface ReceiptLine {
-  name?: string;
-  sku?: string;
+  description: string;
   quantity?: number;
   unitPriceMinor?: number;
-  totalMinor?: number;
+  discountMinor?: number;
   taxMinor?: number;
+  totalMinor?: number;
+  /** Serialised lines only — the customer's warranty proof (R2.8). */
+  imei?: string;
+  imei2?: string;
+  serialNo?: string;
+  warrantyUntil?: string;
 }
 
-/** Receipt JSON — rendered defensively; fields the server omits are skipped. */
+/**
+ * Receipt JSON as `GET /v1/orders/:orderId/receipt` actually returns it.
+ *
+ * The seller block is nested under `seller`; it is NOT `tenantName`/`trn` at the
+ * top level. The earlier declaration claimed the flat shape, so `receipt.trn`
+ * was always `undefined` and the renderer's `|| "100000000000000"` fallback
+ * printed a fabricated TRN on every receipt.
+ */
 export interface Receipt {
-  tenantName?: string;
-  trn?: string;
+  kind?: string;
+  seller?: { name?: string; trn?: string | null };
+  location?: { name?: string; code?: string };
+  cashier?: string;
   orderNo?: string;
   issuedAt?: string;
+  currency?: string;
+  vatRateBp?: number;
   lines?: ReceiptLine[];
   totals?: {
     subtotalMinor?: number;
+    discountMinor?: number;
     taxMinor?: number;
     totalMinor?: number;
-    currency?: string;
   };
+  payments?: Array<{ method: string; amountMinor: number }>;
   [key: string]: unknown;
 }
 
@@ -160,7 +208,10 @@ export function apiErrorMessage(err: unknown, fallback: string): string {
   const body = err.body;
   if (body === null || typeof body !== "object") return fallback;
   const record = body as Record<string, unknown>;
-  if (typeof record.error === "string" && record.error.length > 0) return record.error;
+  // `message` only. This used to return `record.error` first — but in the shape
+  // the API actually sends, `{ error: "NO_OPEN_CASH_SESSION", message: "…" }`,
+  // `error` is the machine code. The cashier was shown the token instead of the
+  // sentence, and the caller's localized fallback never got a chance either.
   for (const candidate of [record, record.error]) {
     if (candidate !== null && typeof candidate === "object") {
       const message = (candidate as Record<string, unknown>).message;
@@ -176,6 +227,11 @@ export function apiErrorCode(err: unknown): string | null {
   const body = err.body;
   if (body === null || typeof body !== "object") return null;
   const record = body as Record<string, unknown>;
+  // The API's own shape is `{ error: "CODE", message: "…" }`, so a bare string
+  // in `error` IS the code. Omitting this made `apiErrorCode` return null for
+  // every real server error, which silently disabled the INSUFFICIENT_POINTS
+  // branch that refreshes the loyalty balance.
+  if (typeof record.error === "string" && record.error.length > 0) return record.error;
   for (const candidate of [record, record.error]) {
     if (candidate !== null && typeof candidate === "object") {
       const code = (candidate as Record<string, unknown>).code;

@@ -58,7 +58,7 @@ export async function registerRateLimit(
   app.addHook("onRequest", async (req, reply) => {
     // Health endpoints must never be throttled — cron pings and load balancers
     // hit them relentlessly and a 429 there triggers a false-positive outage.
-    if (req.url === "/health" || req.url === "/health/deep") return;
+    if (req.url === "/health" || req.url === "/healthz" || req.url === "/health/deep") return;
 
     const { key, kind } = bucketKey(req);
     const now = Date.now();

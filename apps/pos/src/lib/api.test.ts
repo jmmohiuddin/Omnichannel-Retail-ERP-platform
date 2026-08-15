@@ -3,6 +3,7 @@ import {
   ApiError,
   apiErrorCode,
   apiErrorMessage,
+  toMinor,
   createApiClient,
   type StockUnit,
 } from "./api.js";
@@ -104,9 +105,54 @@ describe("apiErrorMessage / apiErrorCode — server error surfacing", () => {
     expect(apiErrorCode(err)).toBe("INSUFFICIENT_POINTS");
   });
 
+  it("extracts from the shape the API actually sends: { error: CODE, message }", () => {
+    // Regression, found by driving the real POS against the real API. Neither
+    // of the two shapes above is what the server emits — its global handler
+    // sends `{ error: err.code, message: err.message }`. `apiErrorMessage`
+    // returned `record.error` first, so the cashier saw the machine token
+    // "NO_OPEN_CASH_SESSION"; and `apiErrorCode` only looked for `.code`, so it
+    // returned null for every real error.
+    const err = new ApiError(409, {
+      error: "NO_OPEN_CASH_SESSION",
+      message: "no open cash session on this register — open the till before taking cash",
+    });
+    expect(apiErrorMessage(err, "fallback")).toBe(
+      "no open cash session on this register — open the till before taking cash",
+    );
+    expect(apiErrorCode(err)).toBe("NO_OPEN_CASH_SESSION");
+  });
+
+  it("never presents a bare error code as if it were a message", () => {
+    // A code with no message must fall through to the caller's localized copy,
+    // not be rendered at the till as English shouting.
+    const err = new ApiError(400, { error: "SERIALIZED_REQUIRED" });
+    expect(apiErrorMessage(err, "fallback")).toBe("fallback");
+    expect(apiErrorCode(err)).toBe("SERIALIZED_REQUIRED");
+  });
+
   it("falls back when the body carries no usable message", () => {
     expect(apiErrorMessage(new ApiError(500, null), "fallback")).toBe("fallback");
     expect(apiErrorMessage(new TypeError("offline"), "fallback")).toBe("fallback");
     expect(apiErrorCode(new ApiError(500, "oops"))).toBeNull();
+  });
+});
+
+describe("toMinor — money arriving from the wire", () => {
+  it("accepts an integer unchanged", () => {
+    expect(toMinor(419900)).toBe(419900);
+  });
+
+  it("coerces the string Postgres sends for BIGINT", () => {
+    // Regression: `/v1/stock-units?imei=` returned price_minor uncoerced, so the
+    // POS received "419900". formatMinor rightly refused it and the exception
+    // unmounted the sale screen — every IMEI scan blanked the till.
+    expect(toMinor("419900")).toBe(419900);
+  });
+
+  it("refuses anything that is not integer minor units", () => {
+    expect(() => toMinor(4199.5)).toThrow(/integer minor units/);
+    expect(() => toMinor("not-money")).toThrow(/integer minor units/);
+    expect(() => toMinor(null)).toThrow(/integer minor units/);
+    expect(() => toMinor(undefined)).toThrow(/integer minor units/);
   });
 });

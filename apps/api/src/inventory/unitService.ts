@@ -26,7 +26,21 @@ export class UnitService {
   }
 
   /** Send an in-stock unit to repair: unit → in_repair, bucket on_hand → damaged. */
-  async repairOut(tenantId: string, actorUserId: string, unitId: string, note?: string) {
+  /**
+   * Send a unit out for repair.
+   *
+   * `occurredAt` exists because repairs are logged after the fact — a handset
+   * handed over on Saturday gets recorded on Monday — and because R10.7
+   * computes the warranty extension from this timestamp, so a wrong one
+   * shortens the customer's cover. Defaults to now.
+   */
+  async repairOut(
+    tenantId: string,
+    actorUserId: string,
+    unitId: string,
+    note?: string,
+    occurredAt?: Date,
+  ) {
     try {
       return await this.db.withTenant(tenantId, async (c) => {
         const unit = await this.loadUnit(c, unitId);
@@ -44,7 +58,7 @@ export class UnitService {
           to: { locationId: unit.location_id, state: "damaged" },
           actorUserId,
           reference: { type: "repair", id: unitId },
-          occurredAt: new Date(),
+          occurredAt: occurredAt ?? new Date(),
           ...(note ? { note } : {}),
         });
         await c.query(
@@ -83,9 +97,45 @@ export class UnitService {
           occurredAt: new Date(),
           ...(note ? { note } : {}),
         });
-        await c.query(
-          "UPDATE stock_unit SET state = 'in_stock', updated_at = now() WHERE id = $1",
+        // R10.7 — the warranty clock extends by downtime.
+        //
+        // Cabinet Decision 66/2023 Art. 19: warranty runs from receipt of the
+        // good and is extended by any period the customer could not use it.
+        // Leaving `warranty_until` static silently shortens every repaired
+        // unit's cover by exactly the time it spent with us, which is the
+        // customer's loss and the shop's liability.
+        //
+        // The downtime is read from the ledger rather than from a new column:
+        // `stock_movement` is append-only and already records when this unit
+        // went out for repair, so it is the authoritative — and untamperable
+        // — source. If no repair_out is found the warranty is left alone
+        // rather than guessed at.
+        const { rows: outAt } = await c.query<{ occurred_at: Date }>(
+          `SELECT occurred_at FROM stock_movement
+            WHERE stock_unit_id = $1 AND movement_type = 'repair_out'
+            ORDER BY occurred_at DESC LIMIT 1`,
           [unitId],
+        );
+        const repairStartedAt = outAt[0]?.occurred_at;
+
+        await c.query(
+          `UPDATE stock_unit
+              SET state = 'in_stock',
+                  updated_at = now(),
+                  warranty_until = CASE
+                    WHEN warranty_until IS NULL OR $2::timestamptz IS NULL
+                      THEN warranty_until
+                    -- Whole days, rounded to nearest, with a floor of 1: a
+                    -- 14-day repair extends cover by 14 days, and a unit in
+                    -- and out the same day still cost the customer a day's
+                    -- use, so downtime never rounds away to nothing.
+                    ELSE warranty_until
+                         + make_interval(days => GREATEST(
+                             1, ROUND(EXTRACT(EPOCH FROM (now() - $2::timestamptz)) / 86400)::int))
+                  END
+            WHERE id = $1
+            RETURNING warranty_until`,
+          [unitId, repairStartedAt ?? null],
         );
         return { state: "in_stock" };
       });

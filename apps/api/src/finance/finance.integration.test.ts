@@ -89,6 +89,9 @@ describe.skipIf(!run)("finance: double-entry journal", () => {
 
     locationId = (await post(ownerToken, "/v1/locations", { kind: "store", name: "Shop", code: "S1" })).json().id;
     deviceId = (await post(ownerToken, "/v1/devices", { kind: "pos_register", name: "Register 1", locationId })).json().id;
+    // A register must have an open till before it can take cash (R3.10):
+    // cash outside a session escapes the blind-close reconciliation.
+    await post(ownerToken, "/v1/cash-sessions", { deviceId: deviceId, openingFloatMinor: 0 });
 
     const mkVariant = async (name: string, vslug: string, sku: string, priceMinor: number, qty: number) => {
       const productId = (await post(ownerToken, "/v1/products", { name, slug: vslug, tracking: "none" })).json().id;

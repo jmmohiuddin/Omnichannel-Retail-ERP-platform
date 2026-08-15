@@ -14,7 +14,9 @@ const run = Boolean(ADMIN_URL && APP_URL);
 // Valid-Luhn IMEIs (GSMA example + derivatives with recomputed check digits).
 const IMEI_A = "490154203237518";
 const IMEI_B = "352099001761481";
-const IMEI_C = "990000862471854";
+// Check digit corrected from ...854, which fails Luhn. The constant was
+// declared and never used, so nothing exercised it until now.
+const IMEI_C = "990000862471853";
 
 describe.skipIf(!run)("serialized sales and refunds", () => {
   let app: ReturnType<typeof buildPgApp>;
@@ -121,6 +123,19 @@ describe.skipIf(!run)("serialized sales and refunds", () => {
     expect(res.json()).toMatchObject({ id: unitA, sku: "PZ-1", state: "in_stock" });
   });
 
+  it("returns priceMinor as a number, not the string pg gives for BIGINT", async () => {
+    // Regression, found by scanning a real IMEI in a real browser: findUnit
+    // returned the row uncoerced, so the POS got "419900", formatMinor threw,
+    // and the sale screen unmounted — a blank till on every IMEI scan.
+    const res = await app.inject({
+      url: `/v1/stock-units?imei=${IMEI_A}`,
+      headers: authed(cashierToken),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(typeof res.json().priceMinor).toBe("number");
+    expect(res.json().priceMinor).toBe(210000);
+  });
+
   it("refuses to sell a serialized variant without a scanned unit", async () => {
     const res = await post(cashierToken, "/v1/pos/sales", {
       id: randomUUID(), deviceId, locationId,
@@ -162,6 +177,8 @@ describe.skipIf(!run)("serialized sales and refunds", () => {
   });
 
   it("refund request goes to pending approval; cashier cannot decide; requester cannot self-approve", async () => {
+    // `card` matches the tender the sale was rung on (above), which is what
+    // refund-to-original-tender now requires (R6.4).
     const req = await post(cashierToken, `/v1/orders/${saleId}/refunds`, {
       amountMinor: 210000, reason: "Customer returned the phone", method: "card",
       restock: [{ variantId: phoneVariantId, quantity: 1, stockUnitId: unitA }],
@@ -178,8 +195,25 @@ describe.skipIf(!run)("serialized sales and refunds", () => {
     expect(byCashier.json().error).toBe("FORBIDDEN_ROLE");
 
     // Owner requests one themselves, then tries to approve it: blocked.
-    const own = await post(ownerToken, `/v1/orders/${saleId}/refunds`, {
-      amountMinor: 1, reason: "self-approval probe", method: "cash",
+    // The probe needs its own order. A pending refund now counts against the
+    // captured total (026), and the refund above has already claimed all of
+    // saleId's 210000 — so a further 1 fils against it is correctly refused.
+    // Receive a dedicated unit rather than consuming IMEI_B, which the next
+    // test expects to still be on hand.
+    const probeUnit = (
+      await post(ownerToken, "/v1/inventory/receipts", {
+        locationId,
+        lines: [{ variantId: phoneVariantId, units: [{ imei1: IMEI_C }] }],
+      })
+    ).json().unitIds[0];
+    const probeSaleId = randomUUID();
+    await post(cashierToken, "/v1/pos/sales", {
+      id: probeSaleId, deviceId, locationId,
+      lines: [{ variantId: phoneVariantId, quantity: 1, unitPriceMinor: 210000, stockUnitId: probeUnit }],
+      payments: [{ method: "card", amountMinor: 210000 }],
+    });
+    const own = await post(ownerToken, `/v1/orders/${probeSaleId}/refunds`, {
+      amountMinor: 1, reason: "self-approval probe", method: "card",
     });
     const selfDecide = await post(ownerToken, `/v1/approvals/${own.json().approvalId}/decision`, { approve: true });
     expect(selfDecide.statusCode).toBe(403);
@@ -217,11 +251,13 @@ describe.skipIf(!run)("serialized sales and refunds", () => {
     expect(payments.some((p) => p.amountMinor === -210000)).toBe(true);
   });
 
-  it("refund exceeding the order total is rejected", async () => {
+  it("refund exceeding the captured amount is rejected", async () => {
+    // The bound is now the money actually captured, not `sales_order.total_minor`
+    // — an order that was never paid has nothing to refund. See 026.
     const res = await post(cashierToken, `/v1/orders/${saleId}/refunds`, {
       amountMinor: 999999, reason: "too much", method: "cash",
     });
     expect(res.statusCode).toBe(422);
-    expect(res.json().error).toBe("AMOUNT_EXCEEDS_ORDER");
+    expect(res.json().error).toBe("AMOUNT_EXCEEDS_CAPTURE");
   });
 });

@@ -145,7 +145,14 @@ export class ReceivingService {
           LIMIT 1`,
         [query.imei ?? null, query.serialNo ?? null],
       );
-      return rows[0];
+      const unit = rows[0];
+      if (!unit) return undefined;
+      // `price_minor` is BIGINT, which pg returns as a *string* to avoid losing
+      // precision. Every other service coerces money on the way out; this one
+      // did not, so the POS received "419900" and `formatMinor` — which rightly
+      // rejects a non-integer — threw and white-screened the till on every IMEI
+      // scan. Prices at this scale are far inside Number.MAX_SAFE_INTEGER.
+      return { ...unit, priceMinor: Number(unit.priceMinor) };
     });
   }
 }

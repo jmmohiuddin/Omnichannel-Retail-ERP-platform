@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Voltix Commerce OS — Interactive Wireframes v1.0</title>
+<style>
+  :root{
+    --ink:#16181d; --ink-2:#4a4f58; --ink-3:#767c87;
+    --line:#d4d7dd; --line-2:#e7e9ed;
+    --bg:#f4f5f7; --paper:#ffffff; --wash:#fafbfc;
+    --accent:#1f6feb; --accent-wash:#eaf1fe;
+    --warn:#b45309; --warn-wash:#fef6e7;
+    --bad:#b42318; --bad-wash:#fdeceb;
+    --good:#15803d; --good-wash:#ecfaf0;
+    --r:6px; --shadow:0 1px 2px rgba(16,20,28,.06),0 8px 24px rgba(16,20,28,.06);
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--sans);background:var(--bg);color:var(--ink);
+       -webkit-font-smoothing:antialiased;line-height:1.45;font-size:14px}
+
+  /* ---------- chrome ---------- */
+  .topbar{position:sticky;top:0;z-index:60;background:var(--paper);
+          border-bottom:1px solid var(--line);padding:10px 20px;
+          display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .brand{font-weight:650;letter-spacing:-.01em}
+  .brand span{color:var(--ink-3);font-weight:400;font-size:12px;margin-left:8px}
+  .tabs{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+  .tab{padding:6px 12px;border:1px solid var(--line);background:var(--wash);
+       border-radius:var(--r);cursor:pointer;font-size:12.5px;color:var(--ink-2);
+       font-family:inherit;transition:.12s}
+  .tab:hover{background:var(--paper);border-color:var(--ink-3)}
+  .tab[aria-selected="true"]{background:var(--ink);color:#fff;border-color:var(--ink)}
+
+  .stage{max-width:1340px;margin:0 auto;padding:22px 20px 80px}
+  .screen{display:none}
+  .screen.on{display:block;animation:in .18s ease}
+  @keyframes in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+
+  .caption{margin:0 0 14px;padding:11px 14px;background:var(--accent-wash);
+           border:1px solid #c6dbfd;border-radius:var(--r);font-size:12.5px;color:#12457f}
+  .caption b{font-weight:650}
+  .caption code{font-family:var(--mono);font-size:11.5px;background:#fff;
+                padding:1px 5px;border-radius:3px;border:1px solid #c6dbfd}
+
+  .device{background:var(--paper);border:1px solid var(--line);border-radius:10px;
+          overflow:hidden;box-shadow:var(--shadow)}
+
+  /* ---------- POS ---------- */
+  .pos-bar{display:flex;align-items:center;gap:14px;padding:0 16px;height:52px;
+           background:var(--ink);color:#fff;font-size:13px}
+  .pos-bar .lg{font-weight:650}
+  .pos-bar .sp{margin-left:auto;display:flex;gap:10px;align-items:center}
+  .chip{padding:3px 10px;border-radius:999px;font-size:11.5px;font-weight:600;
+        border:1px solid rgba(255,255,255,.28)}
+  .chip.ok{background:rgba(255,255,255,.1)}
+  .chip.off{background:var(--warn);border-color:var(--warn);color:#fff}
+  .ghostbtn{background:transparent;border:1px solid rgba(255,255,255,.3);color:#fff;
+            padding:4px 11px;border-radius:var(--r);cursor:pointer;font-size:12px;font-family:inherit}
+  .ghostbtn:hover{background:rgba(255,255,255,.12)}
+
+  .pos-body{display:grid;grid-template-columns:1fr 400px;min-height:620px}
+  .pos-left{padding:16px;border-right:1px solid var(--line);background:var(--wash)}
+  .pos-right{padding:16px;display:flex;flex-direction:column;background:var(--paper)}
+
+  .scanbox{display:flex;align-items:center;gap:10px;border:2px solid var(--accent);
+           background:#fff;border-radius:var(--r);padding:11px 14px;margin-bottom:6px}
+  .scanbox input{border:0;outline:0;flex:1;font-size:15px;font-family:var(--mono);background:transparent}
+  .scanhint{font-size:11.5px;color:var(--ink-3);margin-bottom:14px}
+
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .tile{border:1px solid var(--line);background:#fff;border-radius:var(--r);
+        padding:12px 10px;cursor:pointer;text-align:left;font-family:inherit;transition:.12s}
+  .tile:hover{border-color:var(--accent);box-shadow:0 2px 10px rgba(31,111,235,.12)}
+  .tile .ph{height:52px;background:repeating-linear-gradient(45deg,#f0f1f3,#f0f1f3 6px,#e8eaee 6px,#e8eaee 12px);
+            border-radius:4px;margin-bottom:9px}
+  .tile .nm{font-size:12.5px;font-weight:600;line-height:1.25;min-height:32px}
+  .tile .pr{font-size:13px;font-weight:650;margin-top:6px}
+  .tile .st{font-size:11px;color:var(--good);margin-top:2px}
+  .tile.oos{opacity:.55}
+  .tile.oos .st{color:var(--bad)}
+  .tile .ser{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.04em;
+             background:var(--ink);color:#fff;padding:1px 5px;border-radius:3px;margin-top:5px}
+
+  .cats{display:flex;gap:6px;margin-top:14px;flex-wrap:wrap}
+  .cat{padding:5px 12px;border:1px solid var(--line);background:#fff;border-radius:999px;
+       font-size:12px;cursor:pointer;font-family:inherit;color:var(--ink-2)}
+  .cat.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+
+  .cart-h{font-size:11px;font-weight:700;letter-spacing:.09em;color:var(--ink-3);
+          text-transform:uppercase;padding-bottom:9px;border-bottom:1px solid var(--line)}
+  .cart{flex:1;overflow-y:auto;max-height:290px;padding-top:4px}
+  .line{padding:11px 0;border-bottom:1px solid var(--line-2)}
+  .line .t{font-size:13px;font-weight:600}
+  .line .s{font-size:11.5px;color:var(--ink-3);margin-top:2px}
+  .line .imei{font-family:var(--mono);font-size:11px;color:var(--good);margin-top:3px}
+  .line .imei.pending{color:var(--warn)}
+  .line .b{display:flex;justify-content:space-between;align-items:center;margin-top:6px}
+  .qty{display:flex;gap:4px;align-items:center}
+  .qbtn{width:24px;height:24px;border:1px solid var(--line);background:#fff;border-radius:4px;
+        cursor:pointer;font-family:inherit;font-size:13px;line-height:1}
+  .amt{font-weight:650;font-variant-numeric:tabular-nums}
+  .empty{text-align:center;padding:44px 16px;color:var(--ink-3);font-size:13px}
+
+  .totals{border-top:1px solid var(--line);padding-top:11px;margin-top:8px;font-size:13px}
+  .tr{display:flex;justify-content:space-between;padding:3px 0;color:var(--ink-2)}
+  .tr.big{font-size:20px;font-weight:700;color:var(--ink);border-top:1px solid var(--line);
+          margin-top:8px;padding-top:11px}
+  .tr .v{font-variant-numeric:tabular-nums}
+
+  .softrow{display:flex;gap:8px;margin:12px 0 10px}
+  .soft{flex:1;padding:8px;border:1px dashed var(--line);background:var(--wash);
+        border-radius:var(--r);font-size:12px;cursor:pointer;font-family:inherit;color:var(--ink-2)}
+  .soft:hover{border-color:var(--accent);color:var(--accent)}
+  .soft.active{border-style:solid;border-color:var(--good);background:var(--good-wash);color:var(--good);font-weight:600}
+
+  .cta{width:100%;padding:17px;background:var(--ink);color:#fff;border:0;border-radius:var(--r);
+       font-size:16px;font-weight:650;cursor:pointer;font-family:inherit;letter-spacing:.02em}
+  .cta:hover{background:#000}
+  .cta:disabled{background:var(--line);color:var(--ink-3);cursor:not-allowed}
+  .cta.go{background:var(--good)}
+  .minirow{display:flex;gap:8px;margin-top:8px}
+  .mini{flex:1;padding:9px;border:1px solid var(--line);background:#fff;border-radius:var(--r);
+        cursor:pointer;font-size:12.5px;font-family:inherit;color:var(--ink-2)}
+  .mini:hover{border-color:var(--ink-3)}
+
+  /* ---------- modal ---------- */
+  .veil{position:fixed;inset:0;background:rgba(16,20,28,.55);display:none;
+        align-items:center;justify-content:center;z-index:100;padding:20px}
+  .veil.on{display:flex}
+  .modal{background:#fff;border-radius:10px;max-width:560px;width:100%;
+         box-shadow:0 20px 60px rgba(0,0,0,.3);max-height:92vh;overflow-y:auto}
+  .modal-h{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;
+           justify-content:space-between;align-items:flex-start}
+  .modal-h h3{font-size:16px;font-weight:650}
+  .modal-h p{font-size:12.5px;color:var(--ink-3);margin-top:2px}
+  .x{background:none;border:0;font-size:20px;cursor:pointer;color:var(--ink-3);line-height:1}
+  .modal-b{padding:20px}
+  .modal-f{padding:14px 20px;border-top:1px solid var(--line);display:flex;
+           justify-content:flex-end;gap:8px;background:var(--wash)}
+
+  .bigin{width:100%;padding:16px;border:2px solid var(--accent);border-radius:var(--r);
+         font-size:20px;font-family:var(--mono);text-align:center;outline:0;letter-spacing:.04em}
+  .bigin.err{border-color:var(--bad);background:var(--bad-wash)}
+
+  .note{padding:11px 13px;border-radius:var(--r);font-size:12.5px;margin-top:14px;line-height:1.5}
+  .note.warn{background:var(--warn-wash);border:1px solid #f2d9a8;color:var(--warn)}
+  .note.bad{background:var(--bad-wash);border:1px solid #f6c9c5;color:var(--bad)}
+  .note.good{background:var(--good-wash);border:1px solid #b9e6c9;color:var(--good)}
+  .note.info{background:var(--accent-wash);border:1px solid #c6dbfd;color:#12457f}
+
+  .avail{margin-top:16px;font-size:12px;color:var(--ink-3)}
+  .serchips{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+  .serchip{font-family:var(--mono);font-size:11.5px;padding:5px 10px;border:1px solid var(--line);
+           border-radius:4px;background:var(--wash);cursor:pointer}
+  .serchip:hover{border-color:var(--accent);background:var(--accent-wash)}
+
+  .btn{padding:9px 17px;border:1px solid var(--line);background:#fff;border-radius:var(--r);
+       cursor:pointer;font-size:13px;font-family:inherit}
+  .btn.p{background:var(--ink);color:#fff;border-color:var(--ink);font-weight:600}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+
+  /* ---------- tender ---------- */
+  .tender{display:grid;grid-template-columns:1fr 320px;min-height:560px}
+  .tl{padding:20px;border-right:1px solid var(--line);background:var(--wash)}
+  .trr{padding:20px;background:var(--paper);display:flex;flex-direction:column}
+  .methods{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:20px}
+  .method{padding:22px 14px;border:2px solid var(--line);background:#fff;border-radius:var(--r);
+          cursor:pointer;font-family:inherit;font-size:14px;font-weight:650;text-align:center}
+  .method:hover{border-color:var(--ink-3)}
+  .method.on{border-color:var(--ink);background:var(--ink);color:#fff}
+  .method.dis{opacity:.4;cursor:not-allowed}
+  .method small{display:block;font-weight:400;font-size:11px;margin-top:3px;opacity:.72}
+  .keys{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;max-width:250px;margin-top:12px}
+  .key{padding:15px;border:1px solid var(--line);background:#fff;border-radius:var(--r);
+       cursor:pointer;font-size:17px;font-family:var(--mono)}
+  .key:hover{background:var(--accent-wash);border-color:var(--accent)}
+  .quick{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+  .qk{padding:7px 13px;border:1px solid var(--line);background:#fff;border-radius:var(--r);
+      cursor:pointer;font-size:12.5px;font-family:var(--mono)}
+  .qk:hover{border-color:var(--accent);background:var(--accent-wash)}
+  .disp{font-family:var(--mono);font-size:28px;text-align:right;padding:14px 16px;
+        border:1px solid var(--line);border-radius:var(--r);background:#fff;font-variant-numeric:tabular-nums}
+
+  /* ---------- generic panels ---------- */
+  .panel{background:#fff;border:1px solid var(--line);border-radius:var(--r);margin-bottom:14px}
+  .panel-h{padding:12px 16px;border-bottom:1px solid var(--line);font-size:11px;font-weight:700;
+           letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);background:var(--wash)}
+  .panel-b{padding:16px}
+  .fld{margin-bottom:13px}
+  .fld label{display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:4px}
+  .fld input,.fld select{width:100%;padding:9px 11px;border:1px solid var(--line);
+                         border-radius:var(--r);font-size:13px;font-family:inherit;outline:0}
+  .fld input:focus,.fld select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-wash)}
+  .fld input[dir="rtl"]{text-align:right}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);
+     font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);background:var(--wash)}
+  td{padding:10px 12px;border-bottom:1px solid var(--line-2);font-variant-numeric:tabular-nums}
+  tr:last-child td{border-bottom:0}
+  .num{text-align:right}
+
+  .ck{display:flex;gap:9px;align-items:flex-start;padding:7px 0;font-size:12.5px}
+  .ck .m{font-weight:700;width:14px;flex:none}
+  .ck.y .m{color:var(--good)} .ck.n .m{color:var(--bad)}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:16px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:15px}
+  .card .st{font-size:12px;font-weight:650;margin-bottom:9px}
+  .card .st.ok{color:var(--good)} .card .st.wn{color:var(--warn)}
+  .card h4{font-size:14px;font-weight:650;margin-bottom:8px}
+  .kv{display:flex;justify-content:space-between;font-size:12px;padding:3px 0;color:var(--ink-2)}
+  .kv b{font-variant-numeric:tabular-nums;color:var(--ink)}
+
+  /* ---------- timeline ---------- */
+  .tlx{position:relative;padding-left:26px;margin-top:6px}
+  .tlx:before{content:"";position:absolute;left:6px;top:8px;bottom:8px;width:2px;background:var(--line)}
+  .ev{position:relative;padding:9px 0}
+  .ev:before{content:"";position:absolute;left:-24px;top:14px;width:11px;height:11px;
+             border-radius:50%;background:#fff;border:2.5px solid var(--ink-3)}
+  .ev.hi:before{border-color:var(--accent);background:var(--accent)}
+  .ev .d{font-size:11px;color:var(--ink-3);font-family:var(--mono)}
+  .ev .t{font-size:13px;font-weight:600;margin:1px 0}
+  .ev .m{font-size:12px;color:var(--ink-2)}
+
+  .sk{background:linear-gradient(90deg,#eef0f3 25%,#f7f8fa 50%,#eef0f3 75%);
+      background-size:200% 100%;animation:sh 1.4s infinite;border-radius:4px}
+  @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+  .legend{margin-top:26px;padding:15px 18px;background:#fff;border:1px solid var(--line);
+          border-radius:var(--r);font-size:12.5px;color:var(--ink-2)}
+  .legend b{color:var(--ink)}
+  .legend ul{margin:8px 0 0 18px}
+  .legend li{margin:4px 0}
+
+  @media(max-width:1080px){
+    .pos-body,.tender{grid-template-columns:1fr}
+    .pos-left{border-right:0;border-bottom:1px solid var(--line)}
+    .grid{grid-template-columns:repeat(3,1fr)}
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">Voltix Commerce OS <span>Interactive wireframes v1.0 · low fidelity</span></div>
+  <div class="tabs" role="tablist">
+    <button class="tab" aria-selected="true" data-go="pos">POS · Sale</button>
+    <button class="tab" data-go="lookup">POS · Unit lookup</button>
+    <button class="tab" data-go="shift">POS · Shift close</button>
+    <button class="tab" data-go="product">Admin · Product</button>
+    <button class="tab" data-go="stocktake">Admin · Stocktake</button>
+    <button class="tab" data-go="channels">Admin · Channels</button>
+    <button class="tab" data-go="tax">Admin · Tax docs</button>
+  </div>
+</div>
+
+<div class="stage">
+
+<!-- ============ POS SALE ============ -->
+<section class="screen on" id="pos">
+  <div class="caption">
+    <b>Try it.</b> Click a product tile to add it. Serialised items (marked <code>IMEI</code>) demand a scan —
+    try <code>356938035643809</code> (valid), <code>356938035643801</code> (fails the Luhn check), or
+    <code>111111111111111</code> (already sold). Toggle <b>Go offline</b> in the header to see the degraded state.
+  </div>
+
+  <div class="device">
+    <div class="pos-bar">
+      <span>&#9776;</span>
+      <span class="lg">Voltix POS</span>
+      <span style="opacity:.62">Till 1 · Kabir R.</span>
+      <div class="sp">
+        <span class="chip ok" id="syncchip">&#8635; synced</span>
+        <button class="ghostbtn" onclick="toggleOffline()" id="offbtn">Go offline</button>
+        <span style="opacity:.62;font-variant-numeric:tabular-nums">14:32</span>
+        <button class="ghostbtn" data-go="shift">Shift</button>
+      </div>
+    </div>
+
+    <div class="pos-body">
+      <div class="pos-left">
+        <div class="scanbox">
+          <span style="color:var(--ink-3)">&#128269;</span>
+          <input id="posSearch" placeholder="Scan or search…" autocomplete="off">
+        </div>
+        <div class="scanhint">Always focused — a scan lands here regardless of what was last clicked</div>
+
+        <div class="grid" id="tiles"></div>
+
+        <div class="cats">
+          <button class="cat on">All</button><button class="cat">Phones</button>
+          <button class="cat">Audio</button><button class="cat">Accessories</button>
+        </div>
+      </div>
+
+      <div class="pos-right">
+        <div class="cart-h">Cart</div>
+        <div class="cart" id="cart"></div>
+
+        <div class="totals" id="totals"></div>
+
+        <div class="softrow">
+          <button class="soft" onclick="alert('Wireframe: customer lookup by phone number')">&#128100; Add customer</button>
+          <button class="soft" id="bizbtn" onclick="openBiz()">&#127970; Business sale</button>
+        </div>
+
+        <button class="cta" id="tenderBtn" onclick="goTender()" disabled>Tender</button>
+        <div class="minirow">
+          <button class="mini" onclick="alert('Wireframe: sale parked, recoverable from IndexedDB')">Park</button>
+          <button class="mini" onclick="clearCart()">Clear</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <b>What this wireframe is asserting</b>
+    <ul>
+      <li>The cart is the only place a total appears. The grid never shows a running total — one source of truth on screen.</li>
+      <li>A serialised line is visibly incomplete until its IMEI is bound. The sale cannot tender through it.</li>
+      <li>Out-of-stock tiles stay tappable and explain themselves. A dead tile with no explanation is a support call.</li>
+      <li>Offline changes the header chip and disables only what genuinely needs the network.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ TENDER ============ -->
+<section class="screen" id="tender">
+  <div class="caption"><b>Tender.</b> Cash is the default. Over-tender and the button becomes the change amount — the number the cashier acts on is the biggest thing on screen. Card is an <b>external tender</b> in v1: no UAE acquirer publishes a terminal API, so blocking launch on integration would mean blocking on someone else's sales team.</div>
+
+  <div class="device">
+    <div class="pos-bar">
+      <button class="ghostbtn" data-go="pos">&#8592; Back to sale</button>
+      <div class="sp"><span style="font-size:16px;font-weight:650">TOTAL <span id="tTotal">AED 0.00</span></span></div>
+    </div>
+
+    <div class="tender">
+      <div class="tl">
+        <div class="methods">
+          <button class="method on" onclick="pick(this,'cash')">CASH</button>
+          <button class="method" onclick="pick(this,'card')">CARD<small>external terminal</small></button>
+          <button class="method" id="mTabby" onclick="pick(this,'tabby')">TABBY<small>link or QR</small></button>
+          <button class="method" id="mCredit" onclick="pick(this,'credit')">STORE CREDIT</button>
+        </div>
+
+        <div id="payPane">
+          <div class="disp" id="disp">0.00</div>
+          <div class="quick" id="quicks"></div>
+          <div class="keys">
+            <button class="key" onclick="k('7')">7</button><button class="key" onclick="k('8')">8</button><button class="key" onclick="k('9')">9</button>
+            <button class="key" onclick="k('4')">4</button><button class="key" onclick="k('5')">5</button><button class="key" onclick="k('6')">6</button>
+            <button class="key" onclick="k('1')">1</button><button class="key" onclick="k('2')">2</button><button class="key" onclick="k('3')">3</button>
+            <button class="key" onclick="k('0')">0</button><button class="key" onclick="k('00')">00</button><button class="key" onclick="k('x')">&#9003;</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="trr">
+        <div class="cart-h">Tendered</div>
+        <div id="tenders" style="flex:1;padding-top:8px"></div>
+        <div class="totals">
+          <div class="tr big"><span id="remLabel">Remaining</span><span class="v" id="remVal">AED 0.00</span></div>
+        </div>
+        <button class="cta go" id="completeBtn" onclick="complete()" disabled style="margin-top:12px">Complete</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ UNIT LOOKUP ============ -->
+<section class="screen" id="lookup">
+  <div class="caption"><b>The differentiator, made visible.</b> This screen answers "what is this handset" from nothing but the handset — no receipt, no order number, no customer name. It is the audit's <code>serial_units</code> table finally having a writer, and it is the screenshot worth showing anyone.</div>
+
+  <div class="device" style="padding:20px">
+    <div class="scanbox" style="max-width:520px;margin-bottom:18px">
+      <span style="color:var(--ink-3)">&#128269;</span>
+      <input value="356938035643809" readonly>
+    </div>
+
+    <div class="panel">
+      <div class="panel-b">
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px">
+          <div>
+            <div style="font-size:17px;font-weight:650">iPhone 15 Pro 256GB · Natural Titanium</div>
+            <div style="font-family:var(--mono);font-size:12px;color:var(--ink-3);margin-top:4px">
+              IMEI 356938035643809 &nbsp;·&nbsp; IMEI2 356938035643817
+            </div>
+          </div>
+          <div>
+            <div class="note good" style="margin:0">
+              <b>&#10003; Under warranty — 218 days left</b><br>
+              Shop warranty · expires 6 March 2027
+            </div>
+          </div>
+        </div>
+
+        <div class="tlx" style="margin-top:22px">
+          <div class="ev"><div class="d">12 JAN 2026</div><div class="t">Received</div>
+            <div class="m">PO-1042 · Gulf Mobile Distribution · Cost AED 3,880 <span style="color:var(--ink-3);font-size:11px">(finance:read)</span></div></div>
+          <div class="ev"><div class="d">28 JAN 2026</div><div class="t">Transferred</div>
+            <div class="m">Deira &#8594; Sharjah · approved by Amal</div></div>
+          <div class="ev"><div class="d">06 MAR 2026</div><div class="t">Sold</div>
+            <div class="m">INV-2026-00871 · Till 1 · Kabir · AED 4,299 · Ahmed K. +971 5• ••• 4471</div></div>
+          <div class="ev"><div class="d">14 MAR 2026</div><div class="t">Returned</div>
+            <div class="m">Screen fault · inspected · not restockable</div></div>
+          <div class="ev"><div class="d">16 MAR 2026</div><div class="t">RMA to supplier</div>
+            <div class="m">Claim SC-0093 · Gulf Mobile Distribution</div></div>
+          <div class="ev"><div class="d">02 APR 2026</div><div class="t">Back in stock</div>
+            <div class="m">Replaced by supplier · new unit, same claim</div></div>
+          <div class="ev hi"><div class="d">19 APR 2026</div><div class="t">Sold</div>
+            <div class="m">INV-2026-01204 · storefront · shipped Aramex 7719204418</div></div>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap">
+          <button class="btn p">Start return</button>
+          <button class="btn">Print history</button>
+          <button class="btn">Open invoice</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="note bad"><b>Not-found state.</b> "No unit with this IMEI." → search by partial · check another branch · this may be grey-market stock. Never a blank screen.</div>
+  </div>
+</section>
+
+<!-- ============ SHIFT CLOSE ============ -->
+<section class="screen" id="shift">
+  <div class="caption"><b>Blind count.</b> The expected figure is hidden until the count is submitted — showing it first makes the count meaningless. Closing is <b>blocked</b> while unsynced sales exist; that single rule is what stands between a queued offline sale and permanent loss.</div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
+    <div class="device" style="padding:20px">
+      <h3 style="font-size:16px;font-weight:650;margin-bottom:4px">Close shift · Till 1</h3>
+      <p style="font-size:12.5px;color:var(--ink-3);margin-bottom:16px">Count the drawer and enter the totals. You'll see the expected figure after.</p>
+      <table>
+        <tr><th>Denom.</th><th class="num">Count</th><th class="num">Value</th></tr>
+        <tr><td>AED 500</td><td class="num">2</td><td class="num">1,000.00</td></tr>
+        <tr><td>AED 200</td><td class="num">8</td><td class="num">1,600.00</td></tr>
+        <tr><td>AED 100</td><td class="num">12</td><td class="num">1,200.00</td></tr>
+        <tr><td>AED 50</td><td class="num">6</td><td class="num">300.00</td></tr>
+        <tr><td>AED 20</td><td class="num">5</td><td class="num">100.00</td></tr>
+        <tr><td>Coins</td><td class="num">—</td><td class="num">20.00</td></tr>
+      </table>
+      <div class="tr big" style="padding:0 12px"><span>Counted</span><span class="v">AED 4,220.00</span></div>
+      <button class="cta" style="margin-top:16px" onclick="document.getElementById('variance').style.display='block'">Submit count</button>
+    </div>
+
+    <div>
+      <div class="device" id="variance" style="padding:20px;display:none">
+        <div class="tr"><span>Expected</span><span class="v">AED 4,265.00</span></div>
+        <div class="tr"><span>Counted</span><span class="v">AED 4,220.00</span></div>
+        <div class="tr big" style="color:var(--bad)"><span>Short</span><span class="v">AED 45.00</span></div>
+        <div class="fld" style="margin-top:16px"><label>Reason (required — over threshold)</label><input placeholder="e.g. change given from wrong drawer"></div>
+        <div class="note warn">Recorded against Kabir R. · manager approval required above AED 100</div>
+        <button class="cta" style="margin-top:14px">Confirm close</button>
+      </div>
+
+      <div class="device" style="padding:20px;margin-top:16px">
+        <div class="cart-h" style="margin-bottom:12px">Blocked state</div>
+        <div class="note bad" style="margin-top:0"><b>3 sales not yet synced.</b><br>Reconnect before closing the shift. Sign-out is blocked too.</div>
+        <button class="cta" disabled style="margin-top:14px">Confirm close</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PRODUCT EDITOR ============ -->
+<section class="screen" id="product">
+  <div class="caption"><b>Closes the audit's most serious gap (P-01).</b> Today the catalogue can only be populated by <code>npm run db:seed</code> or direct SQL. The publish checklist on the right <i>is</i> the error message — never a generic "please fill required fields".</div>
+
+  <div class="device">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <button class="btn">&#8592; Products</button>
+      <b style="font-size:15px">iPhone 15 Pro</b>
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <select style="padding:8px 11px;border:1px solid var(--line);border-radius:var(--r);font-family:inherit;font-size:13px">
+          <option>Draft</option><option>Published</option><option>Archived</option>
+        </select>
+        <button class="btn p">Save</button>
+      </span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 300px;gap:0">
+      <div style="padding:20px;border-right:1px solid var(--line)">
+        <div class="panel"><div class="panel-h">Basics</div><div class="panel-b">
+          <div class="two">
+            <div class="fld"><label>Title (EN)</label><input value="iPhone 15 Pro"></div>
+            <div class="fld"><label>Title (AR)</label><input dir="rtl" value="آيفون 15 برو"></div>
+          </div>
+          <div class="two">
+            <div class="fld"><label>Category</label><select><option>Smartphones</option></select></div>
+            <div class="fld"><label>Brand</label><select><option>Apple</option></select></div>
+          </div>
+        </div></div>
+
+        <div class="panel"><div class="panel-h">Serialisation</div><div class="panel-b">
+          <label style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
+            <input type="checkbox" checked style="width:auto;margin-top:2px">
+            <span><b style="font-size:13px">Track every unit by IMEI / serial</b>
+            <div style="font-size:12px;color:var(--ink-2);margin-top:3px">Every unit must be scanned when received and when sold. Enables warranty lookup by IMEI.</div></span>
+          </label>
+          <div class="note warn" style="margin-top:12px">Cannot be turned off once units exist. Archive and recreate instead.</div>
+        </div></div>
+
+        <div class="panel"><div class="panel-h">Warranty</div><div class="panel-b">
+          <div class="two">
+            <div class="fld"><label>Period (months)</label><input value="12"></div>
+            <div class="fld"><label>Provider</label><select><option>Manufacturer</option><option>Shop</option><option>None</option></select></div>
+          </div>
+          <div style="font-size:11.5px;color:var(--ink-3)">No blanket statutory 2-year warranty was corroborated in research — this is per product, with a tenant default.</div>
+        </div></div>
+
+        <div class="panel"><div class="panel-h">Variants</div>
+          <table>
+            <tr><th>Variant</th><th>SKU</th><th class="num">Cost</th><th class="num">Price</th><th class="num">Stock</th><th>Serial</th></tr>
+            <tr><td>Natural Ti · 256GB</td><td style="font-family:var(--mono);font-size:11.5px">IP15P-N2</td><td class="num">3,880</td><td class="num">4,299</td><td class="num">4</td><td style="color:var(--good)">tracked</td></tr>
+            <tr><td>Natural Ti · 512GB</td><td style="font-family:var(--mono);font-size:11.5px">IP15P-N5</td><td class="num">4,510</td><td class="num">4,999</td><td class="num">2</td><td style="color:var(--good)">tracked</td></tr>
+            <tr><td>Blue Ti · 256GB</td><td style="font-family:var(--mono);font-size:11.5px">IP15P-B2</td><td class="num">3,880</td><td class="num">4,299</td><td class="num" style="color:var(--bad)">0</td><td style="color:var(--good)">tracked</td></tr>
+          </table>
+          <div style="padding:12px 16px;display:flex;gap:8px"><button class="btn">+ Add variant</button><button class="btn">Bulk edit</button></div>
+        </div>
+      </div>
+
+      <div style="padding:20px;background:var(--wash)">
+        <div class="panel"><div class="panel-h">Publish checklist</div><div class="panel-b">
+          <div class="ck y"><span class="m">&#10003;</span><span>Price greater than zero</span></div>
+          <div class="ck y"><span class="m">&#10003;</span><span>At least one variant</span></div>
+          <div class="ck y"><span class="m">&#10003;</span><span>Stock mode configured</span></div>
+          <div class="ck n"><span class="m">&#10007;</span><span>Arabic title missing on 1 variant</span></div>
+          <div class="ck n"><span class="m">&#10007;</span><span>No primary image</span></div>
+        </div></div>
+
+        <div class="panel"><div class="panel-h">Channels</div><div class="panel-b">
+          <div class="ck"><input type="checkbox" checked style="width:auto"><span>Storefront</span></div>
+          <div class="ck"><input type="checkbox" checked style="width:auto"><span>POS</span></div>
+          <div class="ck"><input type="checkbox" checked style="width:auto"><span>noon &nbsp;<small style="color:var(--ink-3)">buffer 2</small></span></div>
+          <div class="ck"><input type="checkbox" style="width:auto"><span>Amazon.ae</span></div>
+        </div></div>
+
+        <div class="panel"><div class="panel-h">Loading state</div><div class="panel-b">
+          <div class="sk" style="height:11px;width:70%;margin-bottom:8px"></div>
+          <div class="sk" style="height:11px;width:90%;margin-bottom:8px"></div>
+          <div class="sk" style="height:11px;width:55%"></div>
+          <div style="font-size:11.5px;color:var(--ink-3);margin-top:10px">Skeletons match the real layout. The audit found zero loading states in admin.</div>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ STOCKTAKE ============ -->
+<section class="screen" id="stocktake">
+  <div class="caption"><b>The audit rated stock drift the highest-probability failure</b> — "will happen in week one" — because no correction path existed at all. A serialised unit counted that the system believes is sold is raised as an exception, never silently restocked.</div>
+
+  <div class="device" style="padding:20px">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+      <b style="font-size:15px">Stocktake · Deira · started 14:02 by Amal</b>
+      <span style="font-size:12.5px;color:var(--ink-3)">Scope: Smartphones</span>
+    </div>
+    <div style="font-size:12.5px;margin-bottom:6px">Counted <b>184</b> of ~210 expected</div>
+    <div style="height:9px;background:var(--line-2);border-radius:99px;overflow:hidden;margin-bottom:18px">
+      <div style="height:100%;width:87%;background:var(--accent)"></div>
+    </div>
+
+    <div class="scanbox" style="max-width:520px;margin-bottom:18px">
+      <span style="color:var(--ink-3)">&#128269;</span><input placeholder="Scan an item or IMEI…">
+    </div>
+
+    <div class="panel"><div class="panel-h">Recent scans</div>
+      <table>
+        <tr><td style="font-family:var(--mono);font-size:11.5px;width:60px">14:31</td><td>iPhone 15 Pro 256 Natural</td><td style="font-family:var(--mono);font-size:11.5px">·· 3809</td><td style="color:var(--good)">&#10003;</td></tr>
+        <tr><td style="font-family:var(--mono);font-size:11.5px">14:31</td><td>iPhone 15 Pro 256 Natural</td><td style="font-family:var(--mono);font-size:11.5px">·· 4471</td><td style="color:var(--good)">&#10003;</td></tr>
+        <tr><td style="font-family:var(--mono);font-size:11.5px">14:30</td><td>AirPods Pro 2</td><td>× 3</td><td style="color:var(--good)">&#10003;</td></tr>
+        <tr style="background:var(--warn-wash)"><td style="font-family:var(--mono);font-size:11.5px">14:30</td><td>Galaxy S24 128 Black</td><td style="font-family:var(--mono);font-size:11.5px">·· 9920</td><td style="color:var(--warn)">&#9888; system says SOLD</td></tr>
+        <tr><td style="font-family:var(--mono);font-size:11.5px">14:29</td><td>USB-C 65W</td><td>× 12</td><td style="color:var(--good)">&#10003;</td></tr>
+      </table>
+    </div>
+
+    <div class="panel"><div class="panel-h">Variance · 7 differences · net −AED 8,441</div>
+      <table>
+        <tr><th>Item</th><th class="num">Expected</th><th class="num">Counted</th><th class="num">Variance</th><th class="num">Value</th></tr>
+        <tr><td>iPhone 15 Pro 256 Natural</td><td class="num">4</td><td class="num">3</td><td class="num" style="color:var(--bad)">−1</td><td class="num" style="color:var(--bad)">−3,880.00</td></tr>
+        <tr><td>Galaxy S24 128 Black &#9888;</td><td class="num">2</td><td class="num">3</td><td class="num" style="color:var(--good)">+1</td><td class="num" style="color:var(--good)">+2,340.00</td></tr>
+        <tr><td>AirPods Pro 2</td><td class="num">31</td><td class="num">28</td><td class="num" style="color:var(--bad)">−3</td><td class="num" style="color:var(--bad)">−1,890.00</td></tr>
+      </table>
+    </div>
+
+    <div class="note warn"><b>1 serialised unit was counted that the system records as sold.</b> It will be raised as an exception, not restocked automatically. Reinstating a sold unit silently is how a system starts lying about what it has.</div>
+
+    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+      <button class="btn">Cancel</button><button class="btn p">Post count — one transaction</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CHANNELS ============ -->
+<section class="screen" id="channels">
+  <div class="caption"><b>"Is my stock right on noon?" answered in five seconds.</b> Drift is deliberately not auto-healed — silent auto-heal is how a stock bug becomes invisible. The circuit breaker below is the guard against a bad feed de-listing an entire catalogue.</div>
+
+  <div class="cards">
+    <div class="card"><div class="st ok">&#9679; Healthy</div><h4>noon</h4>
+      <div class="kv"><span>Last push</span><b>14:31</b></div>
+      <div class="kv"><span>Queue</span><b>0</b></div>
+      <div class="kv"><span>Listings</span><b>1,204</b></div>
+      <div class="kv"><span>Drift</span><b>0</b></div></div>
+    <div class="card"><div class="st wn">&#9679; Degraded</div><h4>Amazon.ae</h4>
+      <div class="kv"><span>Last push</span><b>13:58</b></div>
+      <div class="kv"><span>Queue</span><b style="color:var(--warn)">142</b></div>
+      <div class="kv"><span>Listings</span><b>890</b></div>
+      <div class="kv"><span>Drift</span><b style="color:var(--warn)">3 SKUs</b></div></div>
+    <div class="card"><div class="st ok">&#9679; Healthy</div><h4>Storefront</h4>
+      <div class="kv"><span>Latency</span><b>same DB</b></div>
+      <div class="kv"><span>Queue</span><b>—</b></div>
+      <div class="kv"><span>Listings</span><b>2,310</b></div>
+      <div class="kv"><span>Drift</span><b>0</b></div></div>
+  </div>
+
+  <div class="panel"><div class="panel-h">Needs attention</div>
+    <div class="panel-b">
+      <div class="note warn" style="margin-top:0">
+        <b>Amazon rate limited since 13:58</b> — retrying with backoff.<br>
+        142 stock updates queued · oldest 34 min. <code style="font-family:var(--mono)">getOrders</code> is throttled to ~1 req/min steady state, so this is expected under load, not a fault.
+      </div>
+      <div class="note bad">
+        <b>3 SKUs disagree with Amazon's reported stock</b><br>
+        IP15P-N2 — we say 3, Amazon says 5 &nbsp; <button class="btn" style="padding:4px 10px;font-size:12px">Push ours</button> <button class="btn" style="padding:4px 10px;font-size:12px">Investigate</button>
+      </div>
+      <div class="note bad">
+        <b>&#9888; Circuit breaker tripped</b><br>
+        A stock push would have zeroed 63% of listings. Blocked, not executed. Override requires a typed confirmation.
+        <div style="margin-top:9px"><button class="btn" style="padding:4px 10px;font-size:12px">Review batch</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel"><div class="panel-h">Recent pushes — append-only sync log</div>
+    <table>
+      <tr><th>Time</th><th>Channel</th><th>SKU</th><th>Change</th><th>Reason</th><th>Result</th></tr>
+      <tr><td style="font-family:var(--mono);font-size:11.5px">14:31</td><td>noon</td><td style="font-family:var(--mono);font-size:11.5px">IP15P-N2</td><td>4 &#8594; 3</td><td>sale · POS Till 1</td><td style="color:var(--good)">&#10003; 240ms</td></tr>
+      <tr><td style="font-family:var(--mono);font-size:11.5px">14:31</td><td>amazon</td><td style="font-family:var(--mono);font-size:11.5px">IP15P-N2</td><td>4 &#8594; 3</td><td>sale · POS Till 1</td><td style="color:var(--warn)">&#8987; queued</td></tr>
+      <tr><td style="font-family:var(--mono);font-size:11.5px">14:28</td><td>noon</td><td style="font-family:var(--mono);font-size:11.5px">APP2</td><td>31 &#8594; 28</td><td>stocktake</td><td style="color:var(--good)">&#10003; 180ms</td></tr>
+      <tr><td style="font-family:var(--mono);font-size:11.5px">14:12</td><td>noon</td><td style="font-family:var(--mono);font-size:11.5px">GS24-B1</td><td>1 &#8594; 0</td><td>sale · <b>critical priority</b></td><td style="color:var(--good)">&#10003; 90ms</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- ============ TAX ============ -->
+<section class="screen" id="tax">
+  <div class="caption"><b>Issued documents are immutable.</b> The only action on one is "issue credit note". A gap in the sequence is an incident, not a warning — gapless numbering is a legal requirement, which is why the existing <code>counters</code> table is used rather than a Postgres sequence.</div>
+
+  <div class="device" style="padding:20px">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+      <button class="btn">All types &#9662;</button><button class="btn">August 2026 &#9662;</button>
+      <button class="btn" style="margin-left:auto">Export FTA Audit File</button>
+    </div>
+
+    <div class="cards">
+      <div class="card"><div class="kv"><span>Sales (net)</span><b>AED 284,110</b></div></div>
+      <div class="card"><div class="kv"><span>VAT collected</span><b>AED 12,940</b></div></div>
+      <div class="card"><div class="kv"><span>Reverse charged</span><b>AED 41,200</b></div></div>
+      <div class="card"><div class="kv"><span>Credit notes</span><b>AED −2,340</b></div></div>
+    </div>
+
+    <div class="panel">
+      <table>
+        <tr><th>Number</th><th>Date</th><th>Customer</th><th>Type</th><th class="num">Net</th><th class="num">VAT</th><th>Emirate</th></tr>
+        <tr><td style="font-family:var(--mono);font-size:11.5px">INV-2026-001204</td><td>12 Aug</td><td>Walk-in</td><td>Simplified</td><td class="num">4,094.29</td><td class="num">204.71</td><td>Dubai</td></tr>
+        <tr style="background:var(--accent-wash)"><td style="font-family:var(--mono);font-size:11.5px">INV-2026-001203</td><td>12 Aug</td><td>Al Noor Trading LLC</td><td><b>Full · RCM</b></td><td class="num">5,806.67</td><td class="num">0.00</td><td>Dubai</td></tr>
+        <tr><td style="font-family:var(--mono);font-size:11.5px">INV-2026-001202</td><td>11 Aug</td><td>Fatima A.</td><td>Simplified</td><td class="num">1,712.38</td><td class="num">85.62</td><td>Sharjah</td></tr>
+        <tr><td style="font-family:var(--mono);font-size:11.5px">CN-2026-000045</td><td>11 Aug</td><td>Al Noor Trading LLC</td><td>Credit note</td><td class="num">−2,340.00</td><td class="num">0.00</td><td>Dubai</td></tr>
+      </table>
+    </div>
+
+    <div class="note info">
+      <b>Not yet connected to an Accredited Service Provider.</b><br>
+      Required for B2B sales from 1 July 2027 (revenue under AED 50m); ASP appointed by 31 March 2027.
+      Your documents already carry every PINT AE field, so connecting is configuration, not migration.
+      <div style="margin-top:9px"><button class="btn" style="padding:5px 12px;font-size:12px">Connect an ASP</button></div>
+    </div>
+    <div class="note bad">
+      <b>Sequence gap detected — INV-2026-001199 is missing.</b> Gapless numbering is a legal requirement. This is raised as an incident, not a warning.
+    </div>
+  </div>
+</section>
+
+</div><!-- /stage -->
+
+<!-- ============ MODALS ============ -->
+<div class="veil" id="imeiVeil">
+  <div class="modal">
+    <div class="modal-h">
+      <div><h3>Scan the IMEI</h3><p id="imeiProd">iPhone 15 Pro 256GB · Natural Titanium</p></div>
+      <button class="x" onclick="closeImei(true)">&times;</button>
+    </div>
+    <div class="modal-b">
+      <input class="bigin" id="imeiIn" placeholder="Scan or type 15 digits" autocomplete="off" inputmode="numeric">
+      <div id="imeiMsg"></div>
+      <div class="note warn"><b>&#9888; This box has 3 barcodes.</b> Scan the one labelled IMEI — usually the first. Research: IMEI1, IMEI2 for dual-SIM, plus serial and part number all sit on the same label, and taking the first read blindly is the most common capture error in this category.</div>
+      <div class="avail">Available in this branch: <b>4</b>
+        <div class="serchips">
+          <span class="serchip" onclick="fillImei('356938035643809')">·· 3809</span>
+          <span class="serchip" onclick="fillImei('356938035644718')">·· 4718</span>
+          <span class="serchip" onclick="fillImei('356938035648820')">·· 8820</span>
+          <span class="serchip" onclick="fillImei('356938035641156')">·· 1156</span>
+        </div>
+        <div style="margin-top:9px;font-size:11.5px">The picker exists for a box whose label is damaged — a real and frequent occurrence.</div>
+      </div>
+    </div>
+    <div class="modal-f">
+      <button class="btn" onclick="closeImei(true)">Cancel</button>
+      <button class="btn">&#128247; Use camera</button>
+      <button class="btn p" onclick="submitImei()">Bind unit</button>
+    </div>
+  </div>
+</div>
+
+<div class="veil" id="bizVeil">
+  <div class="modal">
+    <div class="modal-h"><div><h3>Business sale</h3><p>Capture what UAE tax law requires — without turning the counter into a form</p></div>
+      <button class="x" onclick="closeBiz()">&times;</button></div>
+    <div class="modal-b">
+      <div class="two">
+        <div class="fld"><label>TRN</label><input value="100234567800003"></div>
+        <div class="fld"><label>Emirate</label><select><option>Dubai</option><option>Sharjah</option><option>Abu Dhabi</option></select></div>
+      </div>
+      <div class="fld"><label>Legal name</label><input value="Al Noor Trading LLC"></div>
+      <div class="fld"><label>Address</label><input value="Shop 12, Naif, Deira, Dubai"></div>
+
+      <div style="border:1px solid var(--line);border-radius:var(--r);padding:14px;background:var(--wash)">
+        <label style="display:flex;gap:9px;align-items:flex-start;cursor:pointer">
+          <input type="checkbox" id="rcmChk" checked onchange="rcmToggle()" style="width:auto;margin-top:2px">
+          <span><b style="font-size:13px">Buying for resale or manufacture</b>
+          <div style="font-size:12px;color:var(--ink-2);margin-top:4px;line-height:1.5">
+            Phones, computers and tablets sold to a VAT-registered buyer for resale are <b>reverse charged</b>.
+            You charge no VAT — the buyer accounts for it. <b>You must obtain and keep their written declaration</b>,
+            or you stay liable for the VAT. Cabinet Decision 91 of 2023.
+          </div></span>
+        </label>
+        <div id="declBox" style="margin-top:12px">
+          <div style="border:2px dashed var(--line);border-radius:var(--r);padding:22px;text-align:center;
+                      font-size:12.5px;color:var(--ink-3);background:#fff">&#9997; Sign here</div>
+          <div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap">
+            <button class="btn" style="padding:5px 11px;font-size:12px">Upload signed declaration</button>
+            <button class="btn" style="padding:5px 11px;font-size:12px;border-color:var(--good);color:var(--good)"
+                    onclick="declOnFile()">&#10003; Already on file — 4 Feb 2026</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="note good" id="rcmSummary">
+        <b>This sale: VAT-exclusive · 0% RCM on 2 device lines</b><br>
+        <span id="rcmNums">AED 5,806.67 &nbsp;(was AED 6,097.00 with VAT)</span>
+      </div>
+      <div class="note info">Accessory lines stay standard-rated at 5%. The line-by-line split is where a wrong assumption becomes a tax liability, so it is shown, not hidden.</div>
+    </div>
+    <div class="modal-f">
+      <button class="btn" onclick="closeBiz()">Cancel</button>
+      <button class="btn p" id="applyBiz" onclick="applyBiz()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="veil" id="doneVeil">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-b" style="text-align:center;padding:34px 26px">
+      <div style="font-size:40px">&#10003;</div>
+      <h3 style="font-size:19px;font-weight:650;margin:10px 0 6px">Sale complete</h3>
+      <p style="font-size:13px;color:var(--ink-2)" id="doneMsg"></p>
+      <div style="background:var(--wash);border:1px solid var(--line);border-radius:var(--r);
+                  padding:14px;margin-top:18px;font-family:var(--mono);font-size:11.5px;text-align:left">
+        <div>INV-2026-001205</div>
+        <div style="color:var(--ink-3);margin-top:4px">Receipt printing · drawer opened</div>
+        <div style="color:var(--ink-3)">ESC/POS · 80mm · AR+EN</div>
+        <div style="color:var(--ink-3)">Drawer kick 27,112,0,25,250</div>
+      </div>
+      <div class="note info" style="text-align:left">Stock pushed: storefront instantly (same DB), noon and Amazon enqueued at <b>critical</b> priority because a line reached zero.</div>
+      <button class="cta" style="margin-top:16px" onclick="newSale()">New sale</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- data ---------- */
+const PRODUCTS=[
+ {id:1,n:"iPhone 15 Pro 256GB",p:429900,stock:4,ser:true},
+ {id:2,n:"Galaxy S24 128GB",p:319900,stock:12,ser:true},
+ {id:3,n:"AirPods Pro 2",p:89900,stock:31,ser:false},
+ {id:4,n:"USB-C 65W Charger",p:14900,stock:8,ser:false},
+ {id:5,n:"Pixel 9 128GB",p:279900,stock:0,ser:true},
+ {id:6,n:"Silicone Case",p:8900,stock:44,ser:false},
+ {id:7,n:"Screen Guard",p:4500,stock:120,ser:false},
+ {id:8,n:"Power Bank 20K",p:19900,stock:15,ser:false}
+];
+const SOLD=["111111111111111"];
+let cart=[],offline=false,rcm=false,declOK=true,pendingIdx=null;
+let tenders=[],method="cash",entry="";
+
+const fmt=c=>(c/100).toLocaleString('en-AE',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+/* ---------- tabs ---------- */
+document.addEventListener('click',e=>{
+  const t=e.target.closest('[data-go]'); if(!t)return;
+  go(t.dataset.go);
+});
+function go(id){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on',s.id===id));
+  document.querySelectorAll('.tab').forEach(b=>b.setAttribute('aria-selected',b.dataset.go===id));
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+/* ---------- tiles ---------- */
+function renderTiles(){
+  document.getElementById('tiles').innerHTML=PRODUCTS.map(p=>`
+    <button class="tile ${p.stock===0?'oos':''}" onclick="addItem(${p.id})">
+      <div class="ph"></div>
+      <div class="nm">${p.n}</div>
+      <div class="pr">${fmt(p.p)}</div>
+      <div class="st">${p.stock===0?'○ 0 here':'● '+p.stock+' in stock'}</div>
+      ${p.ser?'<span class="ser">IMEI</span>':''}
+    </button>`).join('');
+}
+
+function addItem(id){
+  const p=PRODUCTS.find(x=>x.id===id);
+  if(p.stock===0){
+    alert("0 in stock at this branch · 4 at Sharjah.\n\nWireframe: this offers a transfer request rather than being a dead tile. An unexplained dead tile is a support call.");
+    return;
+  }
+  if(p.ser){
+    cart.push({...p,qty:1,imei:null});
+    pendingIdx=cart.length-1;
+    document.getElementById('imeiProd').textContent=p.n+" · Natural Titanium";
+    document.getElementById('imeiIn').value="";
+    document.getElementById('imeiIn').classList.remove('err');
+    document.getElementById('imeiMsg').innerHTML="";
+    document.getElementById('imeiVeil').classList.add('on');
+    setTimeout(()=>document.getElementById('imeiIn').focus(),60);
+  }else{
+    const ex=cart.find(x=>x.id===id&&!x.ser);
+    if(ex)ex.qty++; else cart.push({...p,qty:1,imei:null});
+  }
+  renderCart();
+}
+
+/* ---------- IMEI ---------- */
+function fillImei(v){document.getElementById('imeiIn').value=v;submitImei();}
+function luhn(s){
+  let sum=0,alt=false;
+  for(let i=s.length-1;i>=0;i--){let d=+s[i];if(alt){d*=2;if(d>9)d-=9;}sum+=d;alt=!alt;}
+  return sum%10===0;
+}
+function submitImei(){
+  const el=document.getElementById('imeiIn'),v=el.value.trim(),msg=document.getElementById('imeiMsg');
+  el.classList.remove('err');
+  if(!/^\d{15}$/.test(v)){
+    el.classList.add('err');
+    msg.innerHTML='<div class="note bad"><b>An IMEI is 15 digits.</b> Got '+v.length+'. Nothing typed is cleared.</div>';return;
+  }
+  if(!luhn(v)){
+    el.classList.add('err');
+    msg.innerHTML='<div class="note bad"><b>Not a valid IMEI — check the last digit.</b> The check digit failed. Validating it is the cheapest defence against a mis-scan, and it also tells us which barcode on the label is the IMEI.</div>';return;
+  }
+  if(SOLD.includes(v)){
+    el.classList.add('err');
+    msg.innerHTML='<div class="note bad"><b>Already sold — 3 March 2026 on INV-2026-00871.</b><br>Hard block. This is the duplicate-sale guard being visible. Enforced by a unique index, not by application logic.</div>';return;
+  }
+  msg.innerHTML='<div class="note good"><b>&#10003; Unit bound.</b> State moved in_stock &#8594; reserved inside the same transaction.</div>';
+  cart[pendingIdx].imei=v;
+  setTimeout(()=>{closeImei(false);renderCart();},520);
+}
+function closeImei(cancel){
+  if(cancel&&pendingIdx!==null&&!cart[pendingIdx].imei)cart.splice(pendingIdx,1);
+  pendingIdx=null;
+  document.getElementById('imeiVeil').classList.remove('on');
+  renderCart();
+}
+
+/* ---------- cart ---------- */
+function renderCart(){
+  const el=document.getElementById('cart');
+  if(!cart.length){
+    el.innerHTML='<div class="empty">Scan an item to start<div style="font-size:11.5px;margin-top:6px">Not "no items" — tell the cashier what to do</div></div>';
+  }else{
+    el.innerHTML=cart.map((c,i)=>`
+      <div class="line">
+        <div class="t">${c.n}</div>
+        <div class="s">${c.ser?'Natural Titanium':'&nbsp;'}</div>
+        ${c.ser?(c.imei
+            ?`<div class="imei">&#10003; IMEI ·· ${c.imei.slice(-4)}</div>`
+            :`<div class="imei pending">&#9888; IMEI not scanned — cannot tender</div>`):''}
+        <div class="b">
+          <span class="qty">
+            ${c.ser?'<span style="font-size:12px;color:var(--ink-3)">1 ×</span>':
+              `<button class="qbtn" onclick="chg(${i},-1)">−</button><span style="font-size:12.5px;min-width:18px;text-align:center">${c.qty}</span><button class="qbtn" onclick="chg(${i},1)">+</button>`}
+            <span style="font-size:12px;color:var(--ink-3)">&nbsp;${fmt(c.p)}</span>
+          </span>
+          <span class="amt">${fmt(c.p*c.qty)}</span>
+        </div>
+      </div>`).join('');
+  }
+  const gross=cart.reduce((s,c)=>s+c.p*c.qty,0);
+  let net,vat,total;
+  if(rcm){ net=gross-Math.round(gross/21); vat=0; total=net; }
+  else { net=gross-Math.round(gross/21); vat=gross-net; total=gross; }
+
+  document.getElementById('totals').innerHTML=`
+    <div class="tr"><span>Subtotal</span><span class="v">${fmt(net)}</span></div>
+    <div class="tr"><span>${rcm?'VAT — reverse charged (0%)':'VAT 5%'}</span><span class="v">${fmt(vat)}</span></div>
+    ${rcm?'<div class="tr" style="color:var(--good);font-size:11.5px">Cabinet Decision 91/2023 · declaration on file</div>':''}
+    <div class="tr big"><span>TOTAL</span><span class="v">AED ${fmt(total)}</span></div>`;
+
+  const blocked=cart.some(c=>c.ser&&!c.imei);
+  const btn=document.getElementById('tenderBtn');
+  btn.disabled=!cart.length||blocked;
+  btn.textContent=blocked?'Scan IMEI to continue':'Tender';
+  window.__total=total;
+}
+function chg(i,d){cart[i].qty+=d;if(cart[i].qty<1)cart.splice(i,1);renderCart();}
+function clearCart(){if(cart.length&&confirm("Clear "+cart.length+" line(s)?\n\nWireframe: a destructive action is never one tap away.")){cart=[];rcm=false;document.getElementById('bizbtn').classList.remove('active');renderCart();}}
+
+/* ---------- offline ---------- */
+function toggleOffline(){
+  offline=!offline;
+  const c=document.getElementById('syncchip'),b=document.getElementById('offbtn');
+  c.className='chip '+(offline?'off':'ok');
+  c.innerHTML=offline?'&#9888; offline · 3 queued':'&#8635; synced';
+  b.textContent=offline?'Go online':'Go offline';
+  const t=document.getElementById('mTabby'),cr=document.getElementById('mCredit');
+  if(t){t.classList.toggle('dis',offline);cr.classList.toggle('dis',offline);}
+}
+
+/* ---------- business sale ---------- */
+function openBiz(){document.getElementById('bizVeil').classList.add('on');rcmToggle();}
+function closeBiz(){document.getElementById('bizVeil').classList.remove('on');}
+function declOnFile(){declOK=true;rcmToggle();}
+function rcmToggle(){
+  const on=document.getElementById('rcmChk').checked;
+  document.getElementById('declBox').style.display=on?'block':'none';
+  document.getElementById('rcmSummary').style.display=on?'block':'none';
+  const btn=document.getElementById('applyBiz');
+  if(on&&!declOK){btn.disabled=true;btn.textContent='Declaration required';}
+  else{btn.disabled=false;btn.textContent='Apply';}
+}
+function applyBiz(){
+  rcm=document.getElementById('rcmChk').checked;
+  document.getElementById('bizbtn').classList.toggle('active',rcm);
+  document.getElementById('bizbtn').innerHTML=rcm?'&#127970; Business · RCM applied':'&#127970; Business sale';
+  closeBiz();renderCart();
+}
+
+/* ---------- tender ---------- */
+function goTender(){
+  tenders=[];entry="";method="cash";
+  document.getElementById('tTotal').textContent='AED '+fmt(window.__total);
+  renderQuicks();renderTender();go('tender');
+}
+function pick(el,m){
+  if(el.classList.contains('dis')){alert("Needs connection.\n\nOffline: cash and external card only. A stored offline card authorisation is an unsecured loan from merchant to customer — on an AED 4,000 handset we do not offer it.");return;}
+  document.querySelectorAll('.method').forEach(x=>x.classList.remove('on'));
+  el.classList.add('on');method=m;entry="";
+  const pane=document.getElementById('payPane');
+  if(m==='card'){
+    pane.innerHTML=`<div class="note info" style="margin-top:0"><b>Run the standalone terminal for AED ${fmt(remaining())}</b>, then type the approval code below. v1 records card as an external tender — no UAE acquirer publishes a terminal API.</div>
+      <div class="fld" style="margin-top:14px"><label>Approval code</label><input id="auth" placeholder="e.g. 004512" style="font-family:var(--mono)"></div>
+      <button class="btn p" onclick="addCard()">Record card payment</button>`;
+  }else if(m==='tabby'){
+    pane.innerHTML=`<div class="note info" style="margin-top:0"><b>Send a Tabby link by SMS</b> — the shopper approves in their app. QR is the documented fallback when SMS delivery fails.</div>
+      <div class="fld" style="margin-top:14px"><label>Customer phone</label><input value="+971 50 442 7719"></div>
+      <div class="note warn">Pending · waiting for the shopper — 2:47 remaining. There is always a cancel, and cancelling calls the provider's cancel endpoint first.</div>
+      <button class="btn p" onclick="addTender('Tabby',remaining())">Simulate approval</button>`;
+  }else{
+    pane.innerHTML=`<div class="disp" id="disp">0.00</div><div class="quick" id="quicks"></div>
+      <div class="keys">
+        <button class="key" onclick="k('7')">7</button><button class="key" onclick="k('8')">8</button><button class="key" onclick="k('9')">9</button>
+        <button class="key" onclick="k('4')">4</button><button class="key" onclick="k('5')">5</button><button class="key" onclick="k('6')">6</button>
+        <button class="key" onclick="k('1')">1</button><button class="key" onclick="k('2')">2</button><button class="key" onclick="k('3')">3</button>
+        <button class="key" onclick="k('0')">0</button><button class="key" onclick="k('00')">00</button><button class="key" onclick="k('x')">&#9003;</button>
+      </div>`;
+    renderQuicks();
+  }
+}
+function addCard(){const c=document.getElementById('auth').value.trim();
+  if(!c){alert("Enter the approval code from the terminal.\n\nNothing is recorded until it is entered — a card tender with no auth code is unreconcilable.");return;}
+  addTender('Card ·· '+c,remaining());}
+function remaining(){return Math.max(0,window.__total-tenders.reduce((s,t)=>s+Math.min(t.amt,window.__total),0));}
+function renderQuicks(){
+  const q=document.getElementById('quicks');if(!q)return;
+  const r=remaining(),up=[r,Math.ceil(r/10000)*10000,Math.ceil(r/50000)*50000,Math.ceil(r/100000)*100000];
+  q.innerHTML=[...new Set(up)].slice(0,4).map((v,i)=>
+    `<button class="qk" onclick="setEntry(${v})">${i===0?'exact ':''}${fmt(v)}</button>`).join('');
+}
+function k(d){
+  if(d==='x')entry=entry.slice(0,-1); else entry=(entry+d).slice(0,9);
+  const el=document.getElementById('disp');if(el)el.textContent=fmt(+entry||0);
+  window.__entry=+entry||0;
+}
+function setEntry(v){entry=String(v);const el=document.getElementById('disp');if(el)el.textContent=fmt(v);window.__entry=v;
+  addTender('Cash',v);}
+function addTender(label,amt){
+  tenders.push({label,amt});entry="";window.__entry=0;renderTender();renderQuicks();
+  const d=document.getElementById('disp');if(d)d.textContent='0.00';
+}
+function renderTender(){
+  const r=remaining(),paid=tenders.reduce((s,t)=>s+t.amt,0),change=Math.max(0,paid-window.__total);
+  document.getElementById('tenders').innerHTML=tenders.length?tenders.map((t,i)=>
+    `<div class="line"><div class="b"><span class="t">${t.label}</span><span class="amt">${fmt(t.amt)}</span></div></div>`).join('')
+    :'<div class="empty" style="padding:26px">No tender yet</div>';
+  const btn=document.getElementById('completeBtn');
+  if(r>0){
+    document.getElementById('remLabel').textContent='Remaining';
+    document.getElementById('remVal').textContent='AED '+fmt(r);
+    document.getElementById('remVal').style.color='var(--ink)';
+    btn.disabled=true;btn.textContent='AED '+fmt(r)+' remaining';
+  }else{
+    document.getElementById('remLabel').textContent=change>0?'Change':'Settled';
+    document.getElementById('remVal').textContent='AED '+fmt(change);
+    document.getElementById('remVal').style.color=change>0?'var(--good)':'var(--ink)';
+    btn.disabled=false;
+    btn.textContent=change>0?('COMPLETE · CHANGE AED '+fmt(change)):'COMPLETE';
+  }
+}
+function complete(){
+  const paid=tenders.reduce((s,t)=>s+t.amt,0),change=Math.max(0,paid-window.__total);
+  document.getElementById('doneMsg').innerHTML=
+    (change>0?('<b>Change due AED '+fmt(change)+'</b><br>'):'')+
+    (rcm?'Full tax invoice · reverse charge · declaration retained':'Simplified tax invoice · VAT 5%')+
+    (offline?'<br><b style="color:var(--warn)">Queued offline — will replay idempotently</b>':'');
+  document.getElementById('doneVeil').classList.add('on');
+}
+function newSale(){
+  cart=[];tenders=[];rcm=false;
+  document.getElementById('bizbtn').classList.remove('active');
+  document.getElementById('bizbtn').innerHTML='&#127970; Business sale';
+  document.getElementById('doneVeil').classList.remove('on');
+  renderCart();go('pos');
+}
+
+/* ---------- keyboard ---------- */
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    if(document.getElementById('imeiVeil').classList.contains('on'))closeImei(true);
+    else if(document.getElementById('bizVeil').classList.contains('on'))closeBiz();
+  }
+  if(e.key==='Enter'&&document.getElementById('imeiVeil').classList.contains('on'))submitImei();
+});
+
+renderTiles();renderCart();
+</script>
+</body>
+</html>

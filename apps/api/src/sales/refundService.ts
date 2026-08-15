@@ -6,7 +6,10 @@ export class RefundError extends Error {
   constructor(
     readonly code:
       | "ORDER_NOT_FOUND"
-      | "AMOUNT_EXCEEDS_ORDER"
+      /** Refund would exceed the payments actually captured on the order. */
+      | "AMOUNT_EXCEEDS_CAPTURE"
+      /** Refund tender was never captured on this order, and is not store credit. */
+      | "TENDER_NOT_ON_ORDER"
       | "APPROVAL_NOT_FOUND"
       | "ALREADY_DECIDED"
       | "SELF_APPROVAL"
@@ -37,29 +40,69 @@ export class RefundService {
     private readonly db: Db,
     private readonly inventory: PgInventoryService,
     private readonly audit: import("../audit/auditService.js").AuditService,
+    private readonly creditNotes: import("../einvoice/creditNoteService.js").CreditNoteService,
   ) {}
 
   async requestRefund(
     tenantId: string,
     actorUserId: string,
     orderId: string,
-    input: { amountMinor: number; reason: string; method: "cash" | "card"; restock?: RestockLine[] },
+    input: {
+      amountMinor: number;
+      reason: string;
+      /** Must be a tender captured on the order, or `store_credit` (R6.4). */
+      method: "cash" | "card" | "store_credit";
+      restock?: RestockLine[];
+    },
   ): Promise<{ refundId: string; approvalId: string; status: string }> {
     return this.db.withTenant(tenantId, async (c) => {
-      const order = await c.query<{ total_minor: string; refunded: string | null; location_id: string }>(
-        `SELECT o.total_minor, o.location_id,
+      // `FOR UPDATE` serialises concurrent refund requests on this order, so two
+      // requests cannot each read the same outstanding total and both pass.
+      // The 026 trigger enforces the same invariant regardless; this exists to
+      // fail with a message a human can act on rather than a raw check violation.
+      const order = await c.query<{
+        location_id: string;
+        captured: string | null;
+        outstanding: string | null;
+        methods: string[] | null;
+      }>(
+        `SELECT o.location_id,
+                (SELECT sum(p.amount_minor) FROM payment p
+                  WHERE p.order_id = o.id AND p.status = 'captured'
+                    AND p.amount_minor > 0)                          AS captured,
                 (SELECT sum(r.amount_minor) FROM refund r
-                  WHERE r.order_id = o.id AND r.status IN ('approved','processed')) AS refunded
-           FROM sales_order o WHERE o.id = $1`,
+                  WHERE r.order_id = o.id AND r.status <> 'rejected') AS outstanding,
+                (SELECT array_agg(DISTINCT p.method) FROM payment p
+                  WHERE p.order_id = o.id AND p.status = 'captured'
+                    AND p.amount_minor > 0)                          AS methods
+           FROM sales_order o WHERE o.id = $1
+           FOR UPDATE OF o`,
         [orderId],
       );
       const head = order.rows[0];
       if (!head) throw new RefundError("ORDER_NOT_FOUND", "order not found");
-      const alreadyRefunded = Number(head.refunded ?? 0);
-      if (input.amountMinor + alreadyRefunded > Number(head.total_minor)) {
+
+      // Against money actually taken, not money merely ordered. An unpaid order
+      // has nothing to refund.
+      const captured = Number(head.captured ?? 0);
+      const outstanding = Number(head.outstanding ?? 0);
+      if (input.amountMinor + outstanding > captured) {
         throw new RefundError(
-          "AMOUNT_EXCEEDS_ORDER",
-          `refund would exceed order total (already refunded ${alreadyRefunded})`,
+          "AMOUNT_EXCEEDS_CAPTURE",
+          `refund would exceed captured payments (captured ${captured}, ` +
+            `already claimed ${outstanding}, requested ${input.amountMinor})`,
+        );
+      }
+
+      // R6.4: refund to the original tender. Store credit is the sanctioned
+      // fallback when the original tender cannot be reversed; anything else
+      // would let a card sale be paid out of the drawer as cash.
+      const capturedMethods = head.methods ?? [];
+      if (input.method !== "store_credit" && !capturedMethods.includes(input.method)) {
+        throw new RefundError(
+          "TENDER_NOT_ON_ORDER",
+          `cannot refund by ${input.method}: the order was paid by ` +
+            `${capturedMethods.join(", ") || "no captured tender"}`,
         );
       }
 
@@ -254,11 +297,62 @@ export class RefundService {
       [payload.orderId],
     );
 
+    // The tax leg (R7.8). A refund reverses money and stock; only a credit
+    // note reverses the OUTPUT VAT. Issued in this same transaction so the
+    // two can never diverge — a refund that committed without its credit note
+    // would leave VAT collected on a sale that was given back, with nothing
+    // in the system to notice.
+    //
+    // Lines are taken from the restock list where present so the credit
+    // mirrors the goods actually returned. A money-only refund (goodwill, a
+    // price correction) credits the invoice as a whole.
+    const { rows: refundRow } = await c.query<{ id: string }>(
+      "SELECT id FROM refund WHERE approval_id = $1",
+      [approvalId],
+    );
+    const creditLines = await this.creditNoteLinesFor(c, payload.orderId, payload.restock);
+    await this.creditNotes.issueWith(c, tenantId, approverUserId, {
+      orderId: payload.orderId,
+      reason: `refund ${approvalId}`,
+      ...(refundRow[0]?.id ? { refundId: refundRow[0].id } : {}),
+      ...(creditLines.length > 0 ? { lines: creditLines } : {}),
+    });
+
     await c.query(
       `INSERT INTO outbox (id, tenant_id, aggregate, event_type, payload)
        VALUES ($1,$2,$3,'refund.approved',$4)`,
       [randomUUID(), tenantId, `order:${payload.orderId}`,
        JSON.stringify({ orderId: payload.orderId, amountMinor: payload.amountMinor })],
     );
+  }
+
+  /**
+   * Map restocked goods back to the invoice lines they came from, so the
+   * credit note credits the same lines — and therefore inherits the same tax
+   * category and rate — rather than crediting the invoice generically.
+   */
+  private async creditNoteLinesFor(
+    c: import("pg").PoolClient,
+    orderId: string,
+    restock: RestockLine[],
+  ): Promise<Array<{ orderLineId: string; quantity: number }>> {
+    if (restock.length === 0) return [];
+    const { rows } = await c.query<{ id: string; variant_id: string; stock_unit_id: string | null }>(
+      "SELECT id, variant_id, stock_unit_id FROM sales_order_line WHERE order_id = $1",
+      [orderId],
+    );
+    const out: Array<{ orderLineId: string; quantity: number }> = [];
+    const used = new Set<string>();
+    for (const line of restock) {
+      // A serialized return names its exact unit, so match on that first; a
+      // non-serialized return matches the first unused line for its variant.
+      const match =
+        (line.stockUnitId && rows.find((r) => r.stock_unit_id === line.stockUnitId)) ||
+        rows.find((r) => r.variant_id === line.variantId && !used.has(r.id));
+      if (!match) continue;
+      used.add(match.id);
+      out.push({ orderLineId: match.id, quantity: line.quantity });
+    }
+    return out;
   }
 }
