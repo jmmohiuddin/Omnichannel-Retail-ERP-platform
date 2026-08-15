@@ -29,7 +29,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm -r build
+      # pos-desktop is a Tauri shell around apps/pos (built here via its own
+      # web build) — its native Rust/GTK compile needs system libraries
+      # (webkit2gtk, glib, etc.) this fast job doesn't provision, so it's
+      # exercised by a release-specific workflow instead, not every PR.
+      - run: pnpm --filter '!@omniretail/pos-desktop' -r build
       - run: pnpm -r typecheck
 
       # Migrations must apply cleanly from an empty database exactly as they
