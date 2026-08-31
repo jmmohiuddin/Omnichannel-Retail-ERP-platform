@@ -14,7 +14,7 @@ if (!rootEl) throw new Error("Missing #root element");
 
 createRoot(rootEl).render(
   <StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <App />
     </BrowserRouter>
   </StrictMode>,
